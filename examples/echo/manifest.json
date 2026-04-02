@@ -1,0 +1,50 @@
+{
+  "name": "echo",
+  "version": "0.1.0",
+  "icon": "message-circle",
+  "i18n": {
+    "displayName": "Echo Extension",
+    "description": "Minimal extension for testing the SDK pipeline"
+  },
+  "backend": {
+    "runtime": "wasm",
+    "binary": "main.wasm"
+  },
+  "tools": [
+    {
+      "name": "echo",
+      "i18n": { "description": "Echo back the input message" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" }
+        },
+        "required": ["message"]
+      }
+    }
+  ],
+  "policies": {
+    "type": "echo",
+    "actions": ["echo"],
+    "groups": [
+      {
+        "id": "ext:echo:allow-all",
+        "i18n": { "name": "Allow All", "description": "Allow all echo actions" },
+        "policy": { "allow_list": ["echo"] }
+      }
+    ],
+    "default": ["ext:echo:allow-all"]
+  },
+  "frontend": {
+    "entry": "frontend/index.js",
+    "styles": "",
+    "pages": [
+      {
+        "id": "echo",
+        "slot": "asset.connect",
+        "i18n": { "name": "Echo" },
+        "component": "EchoPage"
+      }
+    ]
+  }
+}

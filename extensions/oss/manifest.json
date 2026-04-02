@@ -1,0 +1,215 @@
+{
+  "name": "oss",
+  "version": "1.0.0",
+  "icon": "cloud-storage",
+  "minAppVersion": "1.2.0",
+  "i18n": {
+    "displayName": "manifest.displayName",
+    "description": "manifest.description"
+  },
+  "backend": {
+    "runtime": "wasm",
+    "binary": "main.wasm"
+  },
+  "assetTypes": [
+    {
+      "type": "oss",
+      "i18n": { "name": "assetType.oss.name" },
+      "configSchema": {
+        "type": "object",
+        "propertyOrder": ["endpoint", "publicEndpoint", "region", "bucket", "pathStyle", "accessKeyId", "secretAccessKey"],
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "title": "config.endpoint.title",
+            "placeholder": "config.endpoint.placeholder"
+          },
+          "publicEndpoint": {
+            "type": "string",
+            "title": "config.publicEndpoint.title",
+            "placeholder": "config.publicEndpoint.placeholder",
+            "description": "config.publicEndpoint.description"
+          },
+          "region": {
+            "type": "string",
+            "title": "config.region.title",
+            "placeholder": "config.region.placeholder"
+          },
+          "bucket": {
+            "type": "string",
+            "title": "config.bucket.title",
+            "placeholder": "config.bucket.placeholder",
+            "description": "config.bucket.description"
+          },
+          "pathStyle": {
+            "type": "boolean",
+            "title": "config.pathStyle.title",
+            "description": "config.pathStyle.description"
+          },
+          "accessKeyId": {
+            "type": "string",
+            "title": "config.accessKeyId.title"
+          },
+          "secretAccessKey": {
+            "type": "string",
+            "title": "config.secretAccessKey.title",
+            "format": "password"
+          }
+        },
+        "required": ["endpoint"]
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "list_buckets",
+      "i18n": { "description": "tools.list_buckets.description" },
+      "parameters": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "list_objects",
+      "i18n": { "description": "tools.list_objects.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string", "description": "Bucket name (defaults to configured bucket)" },
+          "prefix": { "type": "string", "description": "Object key prefix filter" },
+          "delimiter": { "type": "string", "description": "Delimiter for grouping (default: /)" },
+          "maxKeys": { "type": "integer", "description": "Max keys to return (default: 1000)" },
+          "continuationToken": { "type": "string", "description": "Pagination token from previous response" }
+        }
+      }
+    },
+    {
+      "name": "get_object_info",
+      "i18n": { "description": "tools.get_object_info.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string" },
+          "key": { "type": "string", "description": "Object key" }
+        },
+        "required": ["key"]
+      }
+    },
+    {
+      "name": "download_object",
+      "i18n": { "description": "tools.download_object.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string" },
+          "key": { "type": "string" }
+        },
+        "required": ["key"]
+      }
+    },
+    {
+      "name": "upload_object",
+      "i18n": { "description": "tools.upload_object.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string" },
+          "key": { "type": "string", "description": "Destination object key" },
+          "content": { "type": "string", "description": "Content to upload (for small inline uploads)" }
+        },
+        "required": ["key"]
+      }
+    },
+    {
+      "name": "copy_object",
+      "i18n": { "description": "tools.copy_object.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sourceBucket": { "type": "string" },
+          "sourceKey": { "type": "string" },
+          "destBucket": { "type": "string" },
+          "destKey": { "type": "string" }
+        },
+        "required": ["sourceKey", "destKey"]
+      }
+    },
+    {
+      "name": "move_object",
+      "i18n": { "description": "tools.move_object.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sourceBucket": { "type": "string" },
+          "sourceKey": { "type": "string" },
+          "destBucket": { "type": "string" },
+          "destKey": { "type": "string" }
+        },
+        "required": ["sourceKey", "destKey"]
+      }
+    },
+    {
+      "name": "delete_object",
+      "i18n": { "description": "tools.delete_object.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string" },
+          "key": { "type": "string" }
+        },
+        "required": ["key"]
+      }
+    },
+    {
+      "name": "delete_objects",
+      "i18n": { "description": "tools.delete_objects.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string" },
+          "keys": { "type": "array", "items": { "type": "string" }, "description": "Object keys to delete" }
+        },
+        "required": ["keys"]
+      }
+    },
+    {
+      "name": "presign_url",
+      "i18n": { "description": "tools.presign_url.description" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bucket": { "type": "string" },
+          "key": { "type": "string" },
+          "expires": { "type": "integer", "description": "Expiration in seconds (default: 3600)" }
+        },
+        "required": ["key"]
+      }
+    }
+  ],
+  "policies": {
+    "type": "oss",
+    "actions": ["list", "read", "write", "delete", "admin"],
+    "groups": [
+      {
+        "id": "ext:oss:readonly",
+        "i18n": { "name": "policy.readonly.name", "description": "policy.readonly.description" },
+        "policy": { "allow_list": ["list", "read"], "deny_list": ["delete", "admin"] }
+      },
+      {
+        "id": "ext:oss:dangerous-deny",
+        "i18n": { "name": "policy.dangerous_deny.name", "description": "policy.dangerous_deny.description" },
+        "policy": { "deny_list": ["delete", "admin"] }
+      }
+    ],
+    "default": ["ext:oss:readonly", "ext:oss:dangerous-deny"]
+  },
+  "frontend": {
+    "entry": "frontend/index.js",
+    "styles": "frontend/style.css",
+    "pages": [
+      {
+        "id": "browser",
+        "slot": "asset.connect",
+        "i18n": { "name": "pages.browser.name" },
+        "component": "BrowserPage"
+      }
+    ]
+  }
+}

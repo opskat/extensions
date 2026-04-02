@@ -1,0 +1,22 @@
+# Build artifacts
+**/dist/
+*.wasm
+extensions/oss/backend/oss
+
+# IDE
+.idea/
+.vscode/
+
+# Dependencies
+**/node_modules/
+
+# OS
+.DS_Store
+
+.claude
+CLAUDE.md
+superpowers
+
+# Dev configs (contain secrets)
+devconfig.json
+**/.devserver/
