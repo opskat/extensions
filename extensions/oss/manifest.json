@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "icon": "cloud-storage",
   "minAppVersion": "1.2.0",
+  "hostABI": "1.0",
   "i18n": {
     "displayName": "manifest.displayName",
     "description": "manifest.description"
