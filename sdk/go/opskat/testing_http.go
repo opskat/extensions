@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -38,38 +39,70 @@ func (h *TestHost) IOOpen(params []byte) (uint32, []byte, error) {
 		Method  string            `json:"method"`
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
+		Addr    string            `json:"addr"`
 	}
 	json.Unmarshal(params, &p)
 
-	if p.Type != "http" {
-		return 0, nil, fmt.Errorf("only http IO is supported in TestHost")
-	}
+	switch p.Type {
+	case "http":
+		if h.httpHandler == nil {
+			return 0, nil, fmt.Errorf("no HTTP mock configured: use WithMockHTTP")
+		}
+		testIOMu.Lock()
+		id := testIONextID
+		testIONextID++
+		testIOHandles[id] = &testIOEntry{
+			httpHandle: &testHTTPHandle{
+				handler: h.httpHandler,
+				method:  p.Method,
+				url:     p.URL,
+				headers: p.Headers,
+			},
+		}
+		testIOMu.Unlock()
+		return id, []byte(`{}`), nil
 
-	if h.httpHandler == nil {
-		return 0, nil, fmt.Errorf("no HTTP mock configured: use WithMockHTTP")
-	}
+	case "tcp":
+		if h.mockTCP == nil {
+			return 0, nil, fmt.Errorf("no TCP mock configured: use WithMockTCP")
+		}
+		conn, err := h.mockTCP(p.Addr)
+		if err != nil {
+			return 0, nil, err
+		}
+		testIOMu.Lock()
+		id := testIONextID
+		testIONextID++
+		testIOMu.Unlock()
+		h.mockTCPMu.Lock()
+		if h.mockTCPConns == nil {
+			h.mockTCPConns = make(map[uint32]net.Conn)
+		}
+		h.mockTCPConns[id] = conn
+		h.mockTCPMu.Unlock()
+		return id, []byte(`{}`), nil
 
-	testIOMu.Lock()
-	id := testIONextID
-	testIONextID++
-	testIOHandles[id] = &testIOEntry{
-		httpHandle: &testHTTPHandle{
-			handler: h.httpHandler,
-			method:  p.Method,
-			url:     p.URL,
-			headers: p.Headers,
-		},
+	default:
+		return 0, nil, fmt.Errorf("unsupported IO type in TestHost: %q", p.Type)
 	}
-	testIOMu.Unlock()
-
-	return id, []byte(`{}`), nil
 }
 
 func (h *TestHost) IORead(handleID uint32, size int) ([]byte, error) {
+	h.mockTCPMu.Lock()
+	conn, ok := h.mockTCPConns[handleID]
+	h.mockTCPMu.Unlock()
+	if ok {
+		buf := make([]byte, size)
+		n, err := conn.Read(buf)
+		if n > 0 {
+			return buf[:n], nil
+		}
+		return nil, err
+	}
 	testIOMu.Lock()
-	entry, ok := testIOHandles[handleID]
+	entry, httpOK := testIOHandles[handleID]
 	testIOMu.Unlock()
-	if !ok || entry.httpHandle == nil {
+	if !httpOK || entry.httpHandle == nil {
 		return nil, fmt.Errorf("handle not found")
 	}
 	hh := entry.httpHandle
@@ -85,10 +118,16 @@ func (h *TestHost) IORead(handleID uint32, size int) ([]byte, error) {
 }
 
 func (h *TestHost) IOWrite(handleID uint32, data []byte) (int, error) {
+	h.mockTCPMu.Lock()
+	conn, ok := h.mockTCPConns[handleID]
+	h.mockTCPMu.Unlock()
+	if ok {
+		return conn.Write(data)
+	}
 	testIOMu.Lock()
-	entry, ok := testIOHandles[handleID]
+	entry, httpOK := testIOHandles[handleID]
 	testIOMu.Unlock()
-	if !ok || entry.httpHandle == nil {
+	if !httpOK || entry.httpHandle == nil {
 		return 0, fmt.Errorf("handle not found")
 	}
 	return entry.httpHandle.body.Write(data)
@@ -127,6 +166,15 @@ func (h *TestHost) IOFlush(handleID uint32) ([]byte, error) {
 }
 
 func (h *TestHost) IOClose(handleID uint32) error {
+	h.mockTCPMu.Lock()
+	conn, tcpOK := h.mockTCPConns[handleID]
+	if tcpOK {
+		delete(h.mockTCPConns, handleID)
+	}
+	h.mockTCPMu.Unlock()
+	if tcpOK {
+		return conn.Close()
+	}
 	testIOMu.Lock()
 	entry, ok := testIOHandles[handleID]
 	if ok {
