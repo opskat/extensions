@@ -16,6 +16,7 @@ extensions/oss/backend/oss
 .claude
 CLAUDE.md
 superpowers
+.omc
 
 # Dev configs (contain secrets)
 devconfig.json

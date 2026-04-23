@@ -46,6 +46,12 @@ func wasmHostKVSet(keyPtr, keyLen, valPtr, valLen uint32)
 //go:wasmimport opskat host_action_event
 func wasmHostActionEvent(typePtr, typeLen, dataPtr, dataLen uint32)
 
+//go:wasmimport opskat host_io_set_deadline
+func wasmHostIOSetDeadline(handleID, kindPtr, kindLen uint32, unixNanos int64) uint64
+
+//go:wasmimport opskat host_action_should_stop
+func wasmHostActionShouldStop() uint32
+
 // Helper: convert Go string to (ptr, len) for WASM.
 func strToPtr(s string) (uint32, uint32) {
 	if len(s) == 0 {
@@ -164,4 +170,15 @@ func (w *wasmHostCaller) ActionEvent(eventType string, data []byte) {
 	tp, tl := strToPtr(eventType)
 	dp, dl := bytesToPtr(data)
 	wasmHostActionEvent(tp, tl, dp, dl)
+}
+
+func (w *wasmHostCaller) IOSetDeadline(handleID uint32, kind string, unixNanos int64) error {
+	kp, kl := strToPtr(kind)
+	packed := wasmHostIOSetDeadline(handleID, kp, kl, unixNanos)
+	_, err := unpackResult(packed)
+	return err
+}
+
+func (w *wasmHostCaller) ActionShouldStop() bool {
+	return wasmHostActionShouldStop() == 1
 }

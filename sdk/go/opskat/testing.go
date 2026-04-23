@@ -5,8 +5,11 @@ package opskat
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // TestEvent represents a captured action event.
@@ -31,14 +34,31 @@ func WithMockHTTP(handler http.HandlerFunc) TestOption {
 	return func(h *TestHost) { h.httpHandler = handler }
 }
 
+// WithMockTCP installs a TCP dialer for IOOpen(type=tcp). The dialer receives
+// the requested addr and returns a net.Conn that backs the TestHost's IO
+// operations for the resulting handle.
+func WithMockTCP(dial func(addr string) (net.Conn, error)) TestOption {
+	return func(h *TestHost) { h.mockTCP = dial }
+}
+
+// WithActionCancel marks the TestHost as already-cancelled, so ActionShouldStop
+// returns true. Used to exercise cooperative-cancel paths in action handlers.
+func WithActionCancel() TestOption {
+	return func(h *TestHost) { h.actionStopped.Store(true) }
+}
+
 // TestHost simulates the host environment for extension unit testing.
 type TestHost struct {
-	assetConfigs map[int64]json.RawMessage
-	kv           map[string][]byte
-	httpHandler  http.HandlerFunc
-	events       []TestEvent
-	eventCb      func(TestEvent)
-	mu           sync.Mutex
+	assetConfigs  map[int64]json.RawMessage
+	kv            map[string][]byte
+	httpHandler   http.HandlerFunc
+	mockTCP       func(addr string) (net.Conn, error)
+	mockTCPMu     sync.Mutex
+	mockTCPConns  map[uint32]net.Conn
+	actionStopped atomic.Bool
+	events        []TestEvent
+	eventCb       func(TestEvent)
+	mu            sync.Mutex
 }
 
 // NewTestHost creates a TestHost and installs it as the active host.
@@ -163,4 +183,34 @@ func (h *TestHost) ActionEvent(eventType string, data []byte) {
 	if h.eventCb != nil {
 		h.eventCb(e)
 	}
+}
+
+// IOSetDeadline applies a deadline to a TCP mock handle registered via WithMockTCP.
+// For non-TCP handles (HTTP mocks) it is a no-op returning nil.
+func (h *TestHost) IOSetDeadline(handleID uint32, kind string, unixNanos int64) error {
+	h.mockTCPMu.Lock()
+	conn, ok := h.mockTCPConns[handleID]
+	h.mockTCPMu.Unlock()
+	if !ok {
+		return nil
+	}
+	var t time.Time
+	if unixNanos != 0 {
+		t = time.Unix(0, unixNanos)
+	}
+	switch kind {
+	case "read":
+		return conn.SetReadDeadline(t)
+	case "write":
+		return conn.SetWriteDeadline(t)
+	case "both":
+		return conn.SetDeadline(t)
+	default:
+		return fmt.Errorf("unknown deadline kind: %q", kind)
+	}
+}
+
+// ActionShouldStop returns the cancellation flag (default false; set via WithActionCancel).
+func (h *TestHost) ActionShouldStop() bool {
+	return h.actionStopped.Load()
 }

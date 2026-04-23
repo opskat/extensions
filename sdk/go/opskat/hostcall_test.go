@@ -85,3 +85,11 @@ func (m *mockHostCaller) KVSet(key string, value []byte) error {
 
 func (m *mockHostCaller) ActionEvent(eventType string, data []byte) {
 }
+
+func (m *mockHostCaller) IOSetDeadline(handleID uint32, kind string, unixNanos int64) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockHostCaller) ActionShouldStop() bool {
+	return false
+}

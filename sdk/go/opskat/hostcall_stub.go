@@ -29,10 +29,14 @@ func (n *nopHost) IORead(handleID uint32, size int) ([]byte, error)      { retur
 func (n *nopHost) IOWrite(handleID uint32, data []byte) (int, error)     { return 0, errNotConfigured }
 func (n *nopHost) IOFlush(handleID uint32) ([]byte, error)               { return nil, errNotConfigured }
 func (n *nopHost) IOClose(handleID uint32) error                         { return errNotConfigured }
+func (n *nopHost) IOSetDeadline(handleID uint32, kind string, unixNanos int64) error {
+	return errNotConfigured
+}
 func (n *nopHost) AssetGetConfig(assetID int64) (json.RawMessage, error) { return nil, errNotConfigured }
 func (n *nopHost) FileDialog(params []byte) (string, error)              { return "", errNotConfigured }
 func (n *nopHost) KVGet(key string) ([]byte, error)                      { return nil, errNotConfigured }
 func (n *nopHost) KVSet(key string, value []byte) error                  { return errNotConfigured }
 func (n *nopHost) ActionEvent(eventType string, data []byte)             {}
+func (n *nopHost) ActionShouldStop() bool                                { return false }
 
 var errNotConfigured = fmt.Errorf("host not configured: use TestHost or run inside WASM")
