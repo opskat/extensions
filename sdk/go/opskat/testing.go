@@ -164,3 +164,14 @@ func (h *TestHost) ActionEvent(eventType string, data []byte) {
 		h.eventCb(e)
 	}
 }
+
+// IOSetDeadline is a stub — TestHost's HTTP mock does not support deadlines.
+// TCP mock support (via WithMockTCP) is layered on top in Phase 1.E-1.
+func (h *TestHost) IOSetDeadline(handleID uint32, kind string, unixNanos int64) error {
+	return nil
+}
+
+// ActionShouldStop returns false by default. WithActionCancel flips this in Phase 1.E-1.
+func (h *TestHost) ActionShouldStop() bool {
+	return false
+}
