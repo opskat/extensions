@@ -80,3 +80,21 @@ func TestDispatch(t *testing.T) {
 		})
 	})
 }
+
+func TestActionContextShouldStop(t *testing.T) {
+	Convey("When action cancel is triggered", t, func() {
+		th := NewTestHost(WithActionCancel())
+		defer th.Close()
+
+		var captured bool
+		resetRegistries()
+		RegisterAction("cancel_test", func(ctx *ActionContext) (any, error) {
+			captured = ctx.ShouldStop()
+			return nil, nil
+		})
+
+		_, err := th.CallAction("cancel_test", json.RawMessage("{}"), func(TestEvent) {})
+		So(err, ShouldBeNil)
+		So(captured, ShouldBeTrue)
+	})
+}

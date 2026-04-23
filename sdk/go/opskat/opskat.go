@@ -16,6 +16,13 @@ type ActionContext struct {
 	Events *EventWriter
 }
 
+// ShouldStop returns true if the caller has requested cancellation.
+// Long-running actions should poll this periodically and exit cleanly
+// (e.g. send an "ended" event with reason="userStop").
+func (ctx *ActionContext) ShouldStop() bool {
+	return hostActionShouldStop()
+}
+
 // ToolHandler handles a tool invocation.
 type ToolHandler func(ctx *ToolContext) (any, error)
 
