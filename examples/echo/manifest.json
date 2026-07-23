@@ -1,6 +1,7 @@
 {
   "name": "echo",
   "version": "0.1.0",
+  "hostABI": "1.0",
   "icon": "message-circle",
   "i18n": {
     "displayName": "Echo Extension",
