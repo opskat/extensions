@@ -64,4 +64,15 @@ func init() {
 	opskat.Tool("search", handleSearch).
 		PolicyResources([]string{actionRead}, classifySearch).
 		Doc("tools.search.description")
+
+	// Opening an asset shows the cluster page (frontend/, built into dist/frontend).
+	// The page calls the tools above; the host runs a page's calls directly, since
+	// they are the user's own actions, while AI and opsctl calls stay gated.
+	opskat.Frontend(opskat.FrontendSpec{
+		Entry:  "frontend/index.js",
+		Styles: "frontend/style.css",
+		Pages: []opskat.Page{
+			{ID: "cluster", Slot: "asset.connect", Name: "page.cluster.title", Component: "ElasticsearchPage"},
+		},
+	})
 }
