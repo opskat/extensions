@@ -24,11 +24,13 @@ export type LoadErrorKind = "auth" | "unreachable" | "other";
 
 /**
  * Classifies why the cluster could not be loaded, from the error the health tool
- * returns (tools.go: "cannot reach Elasticsearch: …" when no answer came back,
- * "Elasticsearch returned HTTP <status>: …" when ES refused).
+ * returns. Only an ES answer carries "Elasticsearch returned HTTP <status>: …"
+ * (401 / 403 is an authentication failure); a failure without a status never got
+ * an answer — refused, unresolvable, TLS, or timed out, worded by Go's net stack
+ * or the host — and is unreachable.
  */
 export function loadErrorKind(message: string): LoadErrorKind {
   if (/returned HTTP 40[13]\b/.test(message)) return "auth";
-  if (message.includes("cannot reach Elasticsearch")) return "unreachable";
-  return "other";
+  if (/returned HTTP \d+/.test(message)) return "other";
+  return "unreachable";
 }

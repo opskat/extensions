@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -195,9 +196,7 @@ var requestClassification = []classifyCase{
 	{"PUT", "/x/_search", `{}`, "admin", []string{"x"}},
 	{"POST", "/x/_source/1", "", "admin", []string{"x"}},
 	{"POST", "/x/_analyze", `{"text":"a"}`, "admin", []string{"x"}},
-	{"PATCH", "/x/_doc/1", `{}`, "admin", []string{"x"}},
 	{"POST", "/_foo/bar", "", "admin", []string{"_foo"}},
-	{"", "/x/_search", "", "admin", []string{"x"}},
 
 	// expressions: wildcards kept, date math widened to a wildcard, remote kept
 	{"GET", "/%3Clogs-%7Bnow%2Fd%7D%3E/_search", "", "read", []string{"logs-*"}},
@@ -205,14 +204,6 @@ var requestClassification = []classifyCase{
 	{"GET", "/remote:logs-*/_search", "", "read", []string{"remote:logs-*"}},
 	{"GET", "/logs-%3F/_search", "", "read", []string{"logs-?"}},
 	{"DELETE", "/-only-exclusion", "", "delete", []string{"*"}},
-
-	// a path the handler refuses is still classified conservatively
-	{"GET", "http://other:9200/_search", "", "admin", []string{"*"}},
-	{"GET", "//other/_search", "", "admin", []string{"*"}},
-	{"GET", "_search", "", "admin", []string{"*"}},
-	{"DELETE", "/logs-a/../prod-1", "", "admin", []string{"*"}},
-	{"DELETE", "/logs-a/%2e%2E/prod-1", "", "admin", []string{"*"}},
-	{"GET", "/./_search", "", "admin", []string{"*"}},
 }
 
 func sortedSet(in []string) []string {
@@ -262,5 +253,24 @@ func TestConvenienceToolClassification(t *testing.T) {
 			So(action, ShouldEqual, "read")
 			So(sortedSet(resources), ShouldResemble, sortedSet(c.resources))
 		}
+	})
+}
+
+func TestRequestRejection(t *testing.T) {
+	Convey("a request the handler would refuse is rejected at classification, before any approval", t, func() {
+		host := opskat.NewTestHost()
+		defer host.Close()
+		for _, path := range []string{"http://evil/x", "https://evil/x", "//evil/_search", "_search", "", "/logs/../_search", "/./_search"} {
+			_, _, err := host.CheckPolicy("request", map[string]any{"method": "GET", "path": path})
+			var rejected *opskat.ArgsRejectedError
+			So(errors.As(err, &rejected), ShouldBeTrue)
+			So(rejected.Reason, ShouldContainSubstring, "path")
+		}
+		_, _, err := host.CheckPolicy("request", map[string]any{"method": "TRACE", "path": "/"})
+		var rejected *opskat.ArgsRejectedError
+		So(errors.As(err, &rejected), ShouldBeTrue)
+		So(rejected.Reason, ShouldContainSubstring, "method")
+		_, _, err = host.CheckPolicy("request", map[string]any{"method": "get", "path": "/_search"})
+		So(err, ShouldBeNil)
 	})
 }

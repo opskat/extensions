@@ -49,6 +49,7 @@ func init() {
 	// unattended only if every index is allowed. Its body may be large (a bulk
 	// load), so opsctl can read it from a file.
 	opskat.Tool("request", handleRequest).
+		RejectArgs(rejectRequest).
 		PolicyResources(requestActions, classifyRequest).
 		FileParam("body").
 		Doc("tools.request.description")

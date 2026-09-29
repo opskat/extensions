@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -212,5 +214,24 @@ func TestAuthInjection(t *testing.T) {
 			So(injected(t, `{"authType":"none","username":"u","password":"p","token":"t"}`), ShouldBeEmpty)
 			So(injected(t, `{"username":"u","password":"p"}`), ShouldBeEmpty)
 		})
+	})
+}
+
+func TestAuthTypeFieldOptions(t *testing.T) {
+	Convey("the auth type dropdown shows translated labels and starts on none", t, func() {
+		f, _ := reflect.TypeFor[esConfig]().FieldByName("AuthType")
+		options := strings.Split(f.Tag.Get("enum"), ",")
+		keys := strings.Split(f.Tag.Get("enumLabels"), ",")
+		So(keys, ShouldHaveLength, len(options))
+		So(f.Tag.Get("default"), ShouldEqual, "none")
+		for _, file := range []string{"locales/en.json", "locales/zh-CN.json"} {
+			raw, err := os.ReadFile(file)
+			So(err, ShouldBeNil)
+			var msgs map[string]string
+			So(json.Unmarshal(raw, &msgs), ShouldBeNil)
+			for _, k := range keys {
+				So(msgs[k], ShouldNotBeEmpty)
+			}
+		}
 	})
 }

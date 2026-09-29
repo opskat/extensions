@@ -26,4 +26,11 @@ describe("loadErrorKind", () => {
     expect(loadErrorKind('cannot reach Elasticsearch: Post "https://es:9200/": dial tcp: i/o timeout')).toBe("unreachable");
     expect(loadErrorKind("Elasticsearch returned HTTP 500: boom")).toBe("other");
   });
+
+  it("treats any failure that carries no ES status as unreachable, not as an ES error", () => {
+    expect(loadErrorKind("context deadline exceeded")).toBe("unreachable");
+    expect(loadErrorKind("tool call timed out after 30s")).toBe("unreachable");
+    expect(loadErrorKind("dial tcp 10.0.0.1:9200: connect: connection refused")).toBe("unreachable");
+    expect(loadErrorKind("tls: failed to verify certificate")).toBe("unreachable");
+  });
 });

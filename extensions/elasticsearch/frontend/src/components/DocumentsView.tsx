@@ -12,7 +12,7 @@ import { buildSearchRequest, parseSearchResponse, type QueryMode } from "../es/s
 import type { SearchHit } from "../es/types";
 import { esRequest } from "../host";
 import type { T } from "../i18n";
-import { atMost, DSL_LANGUAGE, ES_EDITOR_OPTIONS, setupEsEditor } from "./console/esEditor";
+import { atMost, DSL_EDITOR_FRAME, DSL_LANGUAGE, ES_EDITOR_OPTIONS, setupEsEditor } from "./console/esEditor";
 
 /** The query a search ran with — what paging keeps while the inputs are edited. */
 interface Applied {
@@ -195,10 +195,13 @@ export function DocumentsView({
             aria-label={t("page.docs.queryString")}
           />
         ) : (
-          <div className="h-24 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-background">
+          <div
+            className="min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-background"
+            style={DSL_EDITOR_FRAME}
+          >
             <CodeEditor
               language="json"
-              height="100%"
+              height={DSL_EDITOR_FRAME.height}
               fontSize={12}
               value={dsl}
               onChange={setDsl}

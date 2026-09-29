@@ -64,14 +64,22 @@ func normalizeMethod(m string) string { return strings.ToUpper(strings.TrimSpace
 
 func isReadMethod(m string) bool { return m == "GET" || m == "HEAD" }
 
-// classifyRequest is the request tool's classification. A path the handler will
-// refuse is still answered — as admin on every index — since the host asks before
-// the handler ever sees the call.
-func classifyRequest(args requestArgs) (string, []string) {
-	segs, err := parseRequestPath(args.Path)
-	if err != nil {
-		return actionAdmin, []string{allIndices}
+// rejectRequest is the request tool's refusal of arguments that can never run:
+// what handleRequest would refuse before sending. The host asks about a call only
+// after classifying it, so refusing here keeps the user from approving a call
+// that would only fail.
+func rejectRequest(args requestArgs) error {
+	if err := checkRequestMethod(args.Method); err != nil {
+		return err
 	}
+	_, err := parseRequestPath(args.Path)
+	return err
+}
+
+// classifyRequest is the request tool's classification, of arguments
+// rejectRequest accepted.
+func classifyRequest(args requestArgs) (string, []string) {
+	segs, _ := parseRequestPath(args.Path)
 	action, resources := classifyPath(normalizeMethod(args.Method), segs, args.Body)
 	return action, resourceSet(resources)
 }

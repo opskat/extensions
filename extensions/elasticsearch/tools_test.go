@@ -215,6 +215,18 @@ func TestIndicesTool(t *testing.T) {
 			So(q, ShouldContainSubstring, "bytes=b")
 			So(q, ShouldContainSubstring, "expand_wildcards=open%2Cclosed")
 		})
+		Convey("hides names starting with . unless hidden indices are requested", func() {
+			withSystem := `[{"health":"green","status":"open","index":".geoip_databases","docs.count":"1","store.size":"1"},` +
+				`{"health":"green","status":"open","index":"logs-1","docs.count":"10","store.size":"1024"}]`
+			host, _ := cluster(t, map[string]route{"/gw/_cat/indices": {status: 200, body: withSystem}})
+			defer host.Close()
+			out, err := host.CallTool(esAsset, "indices", map[string]any{})
+			So(err, ShouldBeNil)
+			So(indexNames(t, out), ShouldResemble, []string{"logs-1"})
+			out, err = host.CallTool(esAsset, "indices", map[string]any{"include-hidden": true})
+			So(err, ShouldBeNil)
+			So(indexNames(t, out), ShouldResemble, []string{".geoip_databases", "logs-1"})
+		})
 		Convey("narrows to a pattern and includes hidden indices on request", func() {
 			host, seen := cluster(t, map[string]route{"/gw/_cat/indices/logs-*,.ds-*": {status: 200, body: `[]`}})
 			defer host.Close()
@@ -326,4 +338,13 @@ func TestSearchTool(t *testing.T) {
 			So(err.Error(), ShouldContainSubstring, "unknown query [mtch]")
 		})
 	})
+}
+
+func indexNames(t *testing.T, out any) []string {
+	t.Helper()
+	var names []string
+	for _, r := range asMap(t, out)["indices"].([]any) {
+		names = append(names, r.(map[string]any)["index"].(string))
+	}
+	return names
 }

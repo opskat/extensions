@@ -131,11 +131,18 @@ type requestResult struct {
 	Body   any `json:"body"`
 }
 
-func handleRequest(ctx *opskat.ToolContext, args requestArgs) (any, error) {
-	method := normalizeMethod(args.Method)
-	if !requestMethods[method] {
-		return nil, fmt.Errorf("method %q is not one of GET, HEAD, POST, PUT, DELETE", args.Method)
+func checkRequestMethod(m string) error {
+	if !requestMethods[normalizeMethod(m)] {
+		return fmt.Errorf("method %q is not one of GET, HEAD, POST, PUT, DELETE", m)
 	}
+	return nil
+}
+
+func handleRequest(ctx *opskat.ToolContext, args requestArgs) (any, error) {
+	if err := checkRequestMethod(args.Method); err != nil {
+		return nil, err
+	}
+	method := normalizeMethod(args.Method)
 	segs, err := parseRequestPath(args.Path)
 	if err != nil {
 		return nil, err
@@ -262,6 +269,10 @@ func handleIndices(ctx *opskat.ToolContext, args indicesArgs) (any, error) {
 	}
 	out := make([]indexInfo, 0, len(rows))
 	for _, r := range rows {
+		// 7.x does not flag its system indices hidden, so hide by name.
+		if !args.IncludeHidden && strings.HasPrefix(r.Index, ".") {
+			continue
+		}
 		docs, err := optionalCount(r.DocsCount)
 		if err != nil {
 			return nil, fmt.Errorf("index %s: docs.count: %w", r.Index, err)

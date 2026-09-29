@@ -23,7 +23,7 @@ const (
 // only ever learns whether one is set.
 type esConfig struct {
 	Endpoint string            `json:"endpoint" format:"endpoint" title:"config.endpoint.title" placeholder:"config.endpoint.placeholder" desc:"config.endpoint.desc"`
-	AuthType string            `json:"authType,omitempty" enum:"none,basic,apiKey,token" title:"config.authType.title" desc:"config.authType.desc"`
+	AuthType string            `json:"authType,omitempty" enum:"none,basic,apiKey,token" enumLabels:"config.authType.none,config.authType.basic,config.authType.apiKey,config.authType.token" default:"none" title:"config.authType.title" desc:"config.authType.desc"`
 	Username string            `json:"username,omitempty" title:"config.username.title"`
 	Password opskat.Credential `json:"password,omitempty" title:"config.password.title"`
 	APIKey   opskat.Credential `json:"apiKey,omitempty" title:"config.apiKey.title" desc:"config.apiKey.desc"`
