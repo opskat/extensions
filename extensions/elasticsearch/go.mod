@@ -1,9 +1,9 @@
-module github.com/opskat/extensions/examples/echo
+module github.com/opskat/extensions/elasticsearch
 
-go 1.25
+go 1.26.0
 
 require (
-	github.com/opskat/extensions/sdk/go/opskat v0.0.0
+	github.com/opskat/opskat v0.0.0
 	github.com/smartystreets/goconvey v1.8.1
 )
 
@@ -13,4 +13,4 @@ require (
 	github.com/smarty/assertions v1.15.0 // indirect
 )
 
-replace github.com/opskat/extensions/sdk/go/opskat => ../../../sdk/go/opskat
+replace github.com/opskat/opskat => ../../../../../../opskat/.dev-kit/worktrees/2026-09-29-es-extension

@@ -1,0 +1,17 @@
+{
+  "extension.displayName": "Elasticsearch",
+  "extension.description": "Browse and query Elasticsearch clusters, with the same approval rules as every other asset",
+
+  "assetType.elasticsearch.name": "Elasticsearch",
+
+  "config.endpoint.title": "Address",
+  "config.endpoint.placeholder": "https://es.example:9200",
+  "config.endpoint.desc": "Cluster URL. A path prefix is kept, for clusters behind a reverse proxy such as https://gateway.example/es.",
+  "config.authType.title": "Authentication",
+  "config.authType.desc": "None, username and password, an API key, or a bearer token",
+  "config.username.title": "Username",
+  "config.password.title": "Password",
+  "config.apiKey.title": "API key",
+  "config.apiKey.desc": "The encoded value Elasticsearch returns when the key is created",
+  "config.token.title": "Bearer token"
+}

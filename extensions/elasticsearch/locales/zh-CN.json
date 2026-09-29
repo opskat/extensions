@@ -1,0 +1,17 @@
+{
+  "extension.displayName": "Elasticsearch",
+  "extension.description": "浏览、查询 Elasticsearch 集群，与其他资产共用同一套审批规则",
+
+  "assetType.elasticsearch.name": "Elasticsearch",
+
+  "config.endpoint.title": "地址",
+  "config.endpoint.placeholder": "https://es.example:9200",
+  "config.endpoint.desc": "集群地址。集群挂在反向代理后时可带路径前缀，如 https://gateway.example/es",
+  "config.authType.title": "认证方式",
+  "config.authType.desc": "无认证、用户名密码、API Key 或 Bearer Token",
+  "config.username.title": "用户名",
+  "config.password.title": "密码",
+  "config.apiKey.title": "API Key",
+  "config.apiKey.desc": "创建 Key 时 Elasticsearch 返回的 encoded 值",
+  "config.token.title": "Bearer Token"
+}

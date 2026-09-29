@@ -1,0 +1,12 @@
+{
+  "name": "elasticsearch",
+  "version": "0.1.0",
+  "hostABI": "2.2",
+  "backend": {
+    "runtime": "wasm",
+    "binary": "main.wasm"
+  },
+  "capabilities": {
+    "network": { "assetEndpoint": true }
+  }
+}

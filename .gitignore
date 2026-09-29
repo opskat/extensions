@@ -1,7 +1,6 @@
 # Build artifacts
 **/dist/
 *.wasm
-extensions/oss/backend/oss
 
 # IDE
 .idea/
