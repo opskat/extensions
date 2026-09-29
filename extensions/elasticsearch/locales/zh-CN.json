@@ -13,5 +13,16 @@
   "config.password.title": "密码",
   "config.apiKey.title": "API Key",
   "config.apiKey.desc": "创建 Key 时 Elasticsearch 返回的 encoded 值",
-  "config.token.title": "Bearer Token"
+  "config.token.title": "Bearer Token",
+
+  "policy.readOnly.name": "只读",
+  "policy.readOnly.description": "查看健康状态、列出索引、读取 Mapping 和搜索时无需询问",
+  "policy.readWrite.name": "读写",
+  "policy.readWrite.description": "另外允许写入、更新文档和批量导入而无需询问；删除和管理操作仍需确认",
+
+  "tools.request.description": "向集群发送任意 REST 请求，返回状态码和响应体",
+  "tools.health.description": "集群名称、版本、健康状态、节点数与分片统计",
+  "tools.indices.description": "列出索引及其健康状态、开关状态、文档数和存储大小",
+  "tools.mapping.description": "查看索引的字段 Mapping",
+  "tools.search.description": "用 Query DSL 或查询字符串搜索索引并返回命中文档"
 }

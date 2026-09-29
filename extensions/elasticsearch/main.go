@@ -34,4 +34,34 @@ func init() {
 	opskat.RegisterConfigValidator(func(raw json.RawMessage) []opskat.ValidationError {
 		return validateConfig(raw)
 	})
+
+	// Reading is granted to every new asset; writing documents is one group away.
+	// delete and admin are in no group, so they ask unless a rule allows them.
+	opskat.PolicyGroup("ext:elasticsearch:read-only").
+		Name("policy.readOnly.name").Description("policy.readOnly.description").
+		Allow(actionRead).Default()
+	opskat.PolicyGroup("ext:elasticsearch:read-write").
+		Name("policy.readWrite.name").Description("policy.readWrite.description").
+		Allow(actionRead, actionWrite)
+
+	// request classifies each call into an action and every index it touches (see
+	// policy.go); the host denies it if any index hits a deny rule and runs it
+	// unattended only if every index is allowed. Its body may be large (a bulk
+	// load), so opsctl can read it from a file.
+	opskat.Tool("request", handleRequest).
+		PolicyResources(requestActions, classifyRequest).
+		FileParam("body").
+		Doc("tools.request.description")
+	opskat.Tool("health", handleHealth).
+		Policy(actionRead).Resource(func(healthArgs) string { return "_cluster" }).
+		Doc("tools.health.description")
+	opskat.Tool("indices", handleIndices).
+		PolicyResources([]string{actionRead}, classifyIndices).
+		Doc("tools.indices.description")
+	opskat.Tool("mapping", handleMapping).
+		PolicyResources([]string{actionRead}, classifyMapping).
+		Doc("tools.mapping.description")
+	opskat.Tool("search", handleSearch).
+		PolicyResources([]string{actionRead}, classifySearch).
+		Doc("tools.search.description")
 }

@@ -80,8 +80,7 @@ func validateConfig(raw json.RawMessage) []opskat.ValidationError {
 // testConnection asks the cluster for its root document. The host has already
 // scoped the request to the endpoint and injected the credentials.
 func testConnection(cfg esConfig) error {
-	target := strings.TrimRight(cfg.Endpoint, "/") + "/"
-	req, err := http.NewRequest(http.MethodGet, target, nil)
+	req, err := http.NewRequest(http.MethodGet, esURL(cfg.Endpoint, "/"), nil)
 	if err != nil {
 		return fmt.Errorf("invalid endpoint: %w", err)
 	}
@@ -95,33 +94,35 @@ func testConnection(cfg esConfig) error {
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	reason := errorReason(body)
+	_, reason := esErrorDetail(body)
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("authentication failed (HTTP %d): %s", resp.StatusCode, reason)
 	}
 	return fmt.Errorf("Elasticsearch answered HTTP %d: %s", resp.StatusCode, reason)
 }
 
-// errorReason extracts ES's own explanation from an error body: error.reason, a
-// bare error string, or the trimmed body when it is neither.
-func errorReason(body []byte) string {
+// esErrorDetail extracts ES's own explanation from an error body: error.type and
+// error.reason, a bare error string as the reason, or the trimmed body when it is
+// neither.
+func esErrorDetail(body []byte) (typ, reason string) {
 	var parsed struct {
 		Error json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(body, &parsed) == nil && len(parsed.Error) > 0 {
 		var obj struct {
+			Type   string `json:"type"`
 			Reason string `json:"reason"`
 		}
 		if json.Unmarshal(parsed.Error, &obj) == nil && obj.Reason != "" {
-			return obj.Reason
+			return obj.Type, obj.Reason
 		}
 		var s string
 		if json.Unmarshal(parsed.Error, &s) == nil && s != "" {
-			return s
+			return "", s
 		}
 	}
 	if text := strings.TrimSpace(string(body)); text != "" {
-		return text
+		return "", text
 	}
-	return "no details returned"
+	return "", "no details returned"
 }

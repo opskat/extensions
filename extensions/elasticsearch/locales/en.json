@@ -13,5 +13,16 @@
   "config.password.title": "Password",
   "config.apiKey.title": "API key",
   "config.apiKey.desc": "The encoded value Elasticsearch returns when the key is created",
-  "config.token.title": "Bearer token"
+  "config.token.title": "Bearer token",
+
+  "policy.readOnly.name": "Read only",
+  "policy.readOnly.description": "Check health, list indices, read mappings and search without asking",
+  "policy.readWrite.name": "Read and write",
+  "policy.readWrite.description": "Also index, update and bulk-load documents without asking. Deletes and management still ask",
+
+  "tools.request.description": "Send any REST request to the cluster and return its status and body",
+  "tools.health.description": "Cluster name, version, status, node count and shard counts",
+  "tools.indices.description": "List indices with health, status, document count and size",
+  "tools.mapping.description": "Show an index's field mapping",
+  "tools.search.description": "Search an index with Query DSL or a query string and return the hits"
 }
