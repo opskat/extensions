@@ -19,6 +19,13 @@ export interface ExtAPI {
     assetId?: number,
     options?: { signal?: AbortSignal }
   ): Promise<unknown>;
+  executeAction(
+    extName: string,
+    action: string,
+    args: unknown,
+    onEvent?: (e: { eventType: string; data: unknown }) => void,
+    assetId?: number
+  ): Promise<unknown>;
 }
 
 declare global {

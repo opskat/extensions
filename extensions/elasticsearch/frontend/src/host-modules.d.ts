@@ -36,19 +36,69 @@ declare module "@opskat/ui" {
     minSize: number;
     maxSize: number;
     storageKey?: string;
+    /** Size grows as the handle moves left (a panel on the right). */
+    reverse?: boolean;
   }): { size: number; isResizing: boolean; handleMouseDown: (e: MouseEvent) => void };
 }
 
 declare module "@opskat/host-ui" {
   import type { ComponentType } from "react";
 
-  /** Monaco editor and model; typed loosely since monaco-editor is not a dependency here. */
+  // Monaco's editor, model and API as far as the page uses them; typed here
+  // since monaco-editor is not a dependency: the host hands its own instance to
+  // CodeEditor's onMount.
+  export interface IDisposable {
+    dispose(): void;
+  }
+  export interface MonacoPosition {
+    lineNumber: number;
+    column: number;
+  }
+  export interface MonacoRange {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  }
+  export interface MonacoModel {
+    getValue(): string;
+    getOffsetAt(position: MonacoPosition): number;
+    getPositionAt(offset: number): MonacoPosition;
+  }
   export interface MonacoEditor {
-    addAction(action: { id: string; label: string; keybindings?: number[]; run: () => void }): unknown;
+    addAction(action: { id: string; label: string; keybindings?: number[]; run: () => void }): IDisposable;
+    getModel(): MonacoModel | null;
+    getPosition(): MonacoPosition | null;
+    onDidChangeCursorPosition(listener: (e: { position: MonacoPosition }) => void): IDisposable;
+    onDidDispose(listener: () => void): IDisposable;
+  }
+  export interface MonacoCompletionItem {
+    label: string;
+    kind: number;
+    insertText: string;
+    range: MonacoRange;
+    sortText?: string;
+    command?: { id: string; title: string };
+  }
+  export interface MonacoCompletionProvider {
+    triggerCharacters?: string[];
+    provideCompletionItems(
+      model: MonacoModel,
+      position: MonacoPosition
+    ): Promise<{ suggestions: MonacoCompletionItem[] }> | { suggestions: MonacoCompletionItem[] };
   }
   export interface Monaco {
     KeyMod: { CtrlCmd: number };
     KeyCode: { Enter: number };
+    editor: { setModelLanguage(model: MonacoModel, languageId: string): void };
+    languages: {
+      register(language: { id: string }): void;
+      getLanguages(): { id: string }[];
+      setMonarchTokensProvider(languageId: string, language: object): IDisposable;
+      setLanguageConfiguration(languageId: string, configuration: object): IDisposable;
+      registerCompletionItemProvider(languageId: string, provider: MonacoCompletionProvider): IDisposable;
+      CompletionItemKind: Record<"Method" | "Function" | "Module" | "Reference" | "Property" | "Field", number>;
+    };
   }
 
   export const version: string;
@@ -60,6 +110,8 @@ declare module "@opskat/host-ui" {
     height?: string | number;
     fontSize?: number;
     placeholder?: string;
+    /** Merged over the host's editor options. */
+    options?: Record<string, unknown>;
     onMount?: (editor: MonacoEditor, monaco: Monaco) => void;
     className?: string;
   }>;

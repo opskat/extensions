@@ -110,5 +110,17 @@
   "page.docs.windowLimit": "最多翻到第 {{window}} 条",
   "page.docs.windowReason": "from + size 超过索引的 max_result_window（{{window}}）时 Elasticsearch 不再返回结果。可缩小查询范围或换个排序来查看后面的文档。",
 
-  "page.console.placeholder": "控制台即将上线。"
+  "page.console.current": "当前请求",
+  "page.console.noRequest": "光标处没有请求",
+  "page.console.run": "执行",
+  "page.console.runHint": "执行光标所在的请求（⌘/Ctrl+Enter）",
+  "page.console.editorPlaceholder": "GET /_search — ⌘/Ctrl+Enter 执行光标所在的请求",
+  "page.console.idle": "把光标放在请求上，按 ⌘/Ctrl+Enter，响应显示在这里。",
+  "page.console.failed": "请求没有得到响应",
+  "page.console.elapsed": "{{ms}} ms",
+  "page.console.tree": "树形",
+  "page.console.raw": "原文",
+  "page.console.emptyBody": "响应体为空。",
+  "page.console.response": "响应",
+  "page.console.resize": "调整响应区宽度"
 }

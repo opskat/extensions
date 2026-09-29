@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialTabs, OVERVIEW_TAB_ID, tabsReducer, type TabsState } from "./tabs";
+import { initialTabs, OVERVIEW_TAB_ID, parseSavedConsoles, savedConsoles, tabsReducer, type TabsState } from "./tabs";
 
 const run = (...actions: Parameters<typeof tabsReducer>[1][]) => actions.reduce<TabsState>(tabsReducer, initialTabs);
 const ids = (s: TabsState) => s.tabs.map((t) => t.id);
@@ -43,5 +43,60 @@ describe("tabsReducer", () => {
     s = tabsReducer(s, { type: "close", id: s.tabs[1].id });
     expect(s.activeId).toBe(active);
     expect(s.tabs).toHaveLength(2);
+  });
+});
+
+describe("console persistence", () => {
+  const consoles = (s: TabsState) => s.tabs.flatMap((t) => (t.kind === "console" ? [t] : []));
+
+  it("snapshots the open consoles in tab order with their current text; index tabs are left out", () => {
+    const s = run({ type: "openConsole" }, { type: "openIndex", index: "logs" }, { type: "openConsole" });
+    const [c1, c2] = consoles(s);
+    const texts = new Map([[c2.id, "GET /_cat/nodes"]]);
+    expect(savedConsoles(s, texts)).toEqual([
+      { number: 1, text: "" },
+      { number: 2, text: "GET /_cat/nodes" },
+    ]);
+    expect(c1.initialText).toBe("");
+  });
+
+  it("restores saved consoles with their numbers and text, and keeps the overview active", () => {
+    const s = run({
+      type: "restoreConsoles",
+      consoles: [
+        { number: 3, text: "GET /_search" },
+        { number: 1, text: "" },
+      ],
+    });
+    expect(consoles(s).map((c) => [c.number, c.initialText])).toEqual([
+      [3, "GET /_search"],
+      [1, ""],
+    ]);
+    expect(s.activeId).toBe(OVERVIEW_TAB_ID);
+    // A new console never reuses a restored number.
+    expect(consoles(tabsReducer(s, { type: "openConsole" })).at(-1)?.number).toBe(4);
+  });
+
+  it("round-trips: what a page saved is what the next page restores", () => {
+    const before = run({ type: "openConsole" }, { type: "openConsole" }, { type: "close", id: "console:1" });
+    const saved = savedConsoles(before, new Map([["console:2", "PUT /orders"]]));
+    const after = run({ type: "restoreConsoles", consoles: parseSavedConsoles(JSON.parse(JSON.stringify({ consoles: saved }))) });
+    expect(savedConsoles(after, new Map())).toEqual(saved);
+  });
+
+  it("renumbers a restored console whose number a console opened meanwhile already has", () => {
+    const s = run({ type: "openConsole" }, { type: "restoreConsoles", consoles: [{ number: 1, text: "GET /" }] });
+    const numbers = consoles(s).map((c) => c.number);
+    expect(new Set(numbers).size).toBe(2);
+    expect(new Set(consoles(s).map((c) => c.id)).size).toBe(2);
+    expect(consoles(s).find((c) => c.initialText === "GET /")?.number).toBe(2);
+  });
+
+  it("reads the load action's answer, and refuses an answer of another shape", () => {
+    expect(parseSavedConsoles({ consoles: [{ number: 2, text: "x" }] })).toEqual([{ number: 2, text: "x" }]);
+    expect(parseSavedConsoles({ consoles: [] })).toEqual([]);
+    for (const bad of [null, {}, { consoles: {} }, { consoles: [{ number: "1", text: "" }] }, { consoles: [{ number: 1 }] }]) {
+      expect(() => parseSavedConsoles(bad)).toThrow();
+    }
   });
 });

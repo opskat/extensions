@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { cn } from "@opskat/ui";
 import { JsonTreeView } from "@opskat/host-ui";
+import type { CompletionSource } from "../es/completionSource";
 import { esError } from "../es/errors";
 import { formatBytes, formatNumber } from "../es/format";
 import { DEFAULT_MAX_RESULT_WINDOW } from "../es/paging";
@@ -19,6 +20,7 @@ export function IndexTab({
   assetId,
   index,
   info,
+  completion,
   t,
   lang,
 }: {
@@ -26,6 +28,8 @@ export function IndexTab({
   index: string;
   /** The index's row in the loaded list; gone when a refresh no longer lists it. */
   info: IndexInfo | undefined;
+  /** The page's completion data, for the DSL box. */
+  completion: CompletionSource;
   t: T;
   lang: string;
 }) {
@@ -97,6 +101,7 @@ export function IndexTab({
             assetId={assetId}
             index={index}
             maxResultWindow={parsed?.maxResultWindow ?? DEFAULT_MAX_RESULT_WINDOW}
+            completion={completion}
             t={t}
             lang={lang}
           />

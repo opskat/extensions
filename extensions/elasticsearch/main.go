@@ -65,6 +65,11 @@ func init() {
 		PolicyResources([]string{actionRead}, classifySearch).
 		Doc("tools.search.description")
 
+	// The page keeps its console tabs per asset (console.go). Actions, not tools:
+	// only the page calls them, and exec never lists them.
+	opskat.RegisterAction("console.load", handleConsoleLoad)
+	opskat.RegisterAction("console.save", handleConsoleSave)
+
 	// Opening an asset shows the cluster page (frontend/, built into dist/frontend).
 	// The page calls the tools above; the host runs a page's calls directly, since
 	// they are the user's own actions, while AI and opsctl calls stay gated.

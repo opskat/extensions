@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { AlertCircle, ChevronLeft, ChevronRight, Info, Loader2, Play, SearchX, Table2, X } from "lucide-react";
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn } from "@opskat/ui";
 import { CodeEditor, JsonTreeView, QueryResultTable, type Monaco, type MonacoEditor } from "@opskat/host-ui";
+import { bodyContext, suggest } from "../es/completion";
+import type { CompletionSource } from "../es/completionSource";
 import { documentColumns, documentRows } from "../es/documents";
 import { errorMessage } from "../es/errors";
 import { formatNumber } from "../es/format";
@@ -10,6 +12,7 @@ import { buildSearchRequest, parseSearchResponse, type QueryMode } from "../es/s
 import type { SearchHit } from "../es/types";
 import { esRequest } from "../host";
 import type { T } from "../i18n";
+import { atMost, DSL_LANGUAGE, ES_EDITOR_OPTIONS, setupEsEditor } from "./console/esEditor";
 
 /** The query a search ran with — what paging keeps while the inputs are edited. */
 interface Applied {
@@ -39,6 +42,8 @@ const EMPTY_QUERY: Applied = { mode: "q", q: "", dsl: "", sort: "" };
 const NO_HITS: SearchHit[] = [];
 /** Below this width the document detail floats over the table instead of beside it. */
 const SIDE_BY_SIDE_MIN_WIDTH = 720;
+/** How long completion waits for the index's mapping before showing what it has. */
+const COMPLETION_WAIT_MS = 1500;
 
 function isEmptyQuery(a: Applied): boolean {
   return a.mode === "q" ? !a.q.trim() : !a.dsl.trim();
@@ -49,12 +54,14 @@ export function DocumentsView({
   assetId,
   index,
   maxResultWindow,
+  completion,
   t,
   lang,
 }: {
   assetId: number;
   index: string;
   maxResultWindow: number;
+  completion: CompletionSource;
   t: T;
   lang: string;
 }) {
@@ -112,12 +119,22 @@ export function DocumentsView({
 
   const search = useCallback(() => execute({ mode, q, dsl, sort }, 0, pageSize), [execute, mode, q, dsl, sort, pageSize]);
   const searchRef = useRef(search);
+  const completionRef = useRef(completion);
   useEffect(() => {
     searchRef.current = search;
-  }, [search]);
+    completionRef.current = completion;
+  }, [search, completion]);
 
   const onEditorMount = useCallback(
     (editor: MonacoEditor, monaco: Monaco) => {
+      // The same body completion as the console's, for this index's mapping.
+      setupEsEditor(editor, monaco, DSL_LANGUAGE, async (value, offset) => {
+        const ctx = bodyContext(value, offset, index);
+        if (!ctx) return null;
+        const source = completionRef.current;
+        await atMost(source.ensure({ target: index }), COMPLETION_WAIT_MS);
+        return { from: ctx.from, items: suggest(ctx, source.data) };
+      });
       editor.addAction({
         id: "es.docs.search",
         label: t("page.docs.search"),
@@ -125,7 +142,7 @@ export function DocumentsView({
         run: () => searchRef.current(),
       });
     },
-    [t]
+    [t, index]
   );
 
   const onEnter = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -186,6 +203,7 @@ export function DocumentsView({
               value={dsl}
               onChange={setDsl}
               onMount={onEditorMount}
+              options={ES_EDITOR_OPTIONS}
               placeholder={t("page.docs.dslPlaceholder")}
             />
           </div>

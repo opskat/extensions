@@ -1,9 +1,12 @@
 import { useReducer } from "react";
 import { cn, useResizeHandle } from "@opskat/ui";
 import { ROOT_CLASS } from "../../tooling/scope-css";
+import type { CompletionSource } from "../es/completionSource";
 import { initialTabs, tabsReducer, type EsTab } from "../es/tabs";
 import { useT, type T } from "../i18n";
 import { useCluster, type ClusterData } from "../useCluster";
+import { useCompletionSource } from "../useCompletionSource";
+import { useConsolePersistence } from "../useConsolePersistence";
 import { ConsoleTab } from "./console/ConsoleTab";
 import { IndexTab } from "./IndexTab";
 import { Overview } from "./Overview";
@@ -16,6 +19,9 @@ export function ElasticsearchPage({ assetId }: { assetId: number }) {
   const { t, lang } = useT();
   const { state, reload } = useCluster(assetId);
   const [tabs, dispatch] = useReducer(tabsReducer, initialTabs);
+  const onConsoleText = useConsolePersistence(assetId, tabs, dispatch);
+  const data = state.status === "ready" ? state.data : null;
+  const completion = useCompletionSource(assetId, data);
   const sidebar = useResizeHandle({
     defaultSize: 260,
     minSize: 200,
@@ -31,7 +37,6 @@ export function ElasticsearchPage({ assetId }: { assetId: number }) {
     );
   }
 
-  const data = state.status === "ready" ? state.data : null;
   const active = tabs.tabs.find((tab) => tab.id === tabs.activeId);
 
   return (
@@ -73,7 +78,15 @@ export function ElasticsearchPage({ assetId }: { assetId: number }) {
               role="tabpanel"
               className={cn("absolute inset-0", tab.id !== tabs.activeId && "invisible pointer-events-none")}
             >
-              <TabContent tab={tab} assetId={assetId} data={data} t={t} lang={lang} />
+              <TabContent
+                tab={tab}
+                assetId={assetId}
+                data={data}
+                completion={completion}
+                onConsoleText={onConsoleText}
+                t={t}
+                lang={lang}
+              />
             </div>
           ))}
         </div>
@@ -86,12 +99,16 @@ function TabContent({
   tab,
   assetId,
   data,
+  completion,
+  onConsoleText,
   t,
   lang,
 }: {
   tab: EsTab;
   assetId: number;
   data: ClusterData | null;
+  completion: CompletionSource;
+  onConsoleText: (id: string, text: string) => void;
   t: T;
   lang: string;
 }) {
@@ -104,11 +121,21 @@ function TabContent({
           assetId={assetId}
           index={tab.index}
           info={data?.indices.find((i) => i.index === tab.index)}
+          completion={completion}
           t={t}
           lang={lang}
         />
       );
     case "console":
-      return <ConsoleTab assetId={assetId} tab={tab} indices={data?.indices ?? []} t={t} lang={lang} />;
+      return (
+        <ConsoleTab
+          assetId={assetId}
+          tab={tab}
+          completion={completion}
+          onTextChange={onConsoleText}
+          t={t}
+          lang={lang}
+        />
+      );
   }
 }

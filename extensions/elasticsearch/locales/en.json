@@ -110,5 +110,17 @@
   "page.docs.windowLimit": "Paging stops at hit {{window}}",
   "page.docs.windowReason": "Elasticsearch serves a page only while from + size stays within the index's max_result_window ({{window}}). Narrow the query or sort differently to reach later hits.",
 
-  "page.console.placeholder": "The console is on its way."
+  "page.console.current": "Request",
+  "page.console.noRequest": "No request at the cursor",
+  "page.console.run": "Run",
+  "page.console.runHint": "Run the request under the cursor (⌘/Ctrl+Enter)",
+  "page.console.editorPlaceholder": "GET /_search — ⌘/Ctrl+Enter runs the request under the cursor",
+  "page.console.idle": "Put the cursor on a request and press ⌘/Ctrl+Enter to see its response here.",
+  "page.console.failed": "The request got no answer",
+  "page.console.elapsed": "{{ms}} ms",
+  "page.console.tree": "Tree",
+  "page.console.raw": "Raw",
+  "page.console.emptyBody": "Empty response body.",
+  "page.console.response": "Response",
+  "page.console.resize": "Resize the response panel"
 }
