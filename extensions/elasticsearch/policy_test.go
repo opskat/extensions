@@ -79,6 +79,16 @@ var requestClassification = []classifyCase{
 	), "read", []string{"a", "b", "c", "d", "e", "f"}},
 	{"POST", "/_msearch", ndjson(`{"index":"b"}`, `{}`, `{}`, `{}`), "read", []string{"*", "b"}},
 	{"POST", "/_msearch/template", ndjson(`{"index":"t-1"}`, `{"id":"tpl"}`), "read", []string{"t-1"}},
+	// ES pairs _msearch lines strictly by position: an empty header line is an empty
+	// header (the path's scope), only a body starting with "\n" skips that one line,
+	// and a header naming both index and indices searches both.
+	{"POST", "/logs/_msearch", ndjson(
+		`{"index":"a"}`, `{}`,
+		``, `{"query":{}}`,
+		`{"index":"secret"}`, `{}`,
+	), "read", []string{"a", "logs", "secret"}},
+	{"POST", "/logs/_msearch", "\n" + ndjson(`{"index":"a"}`, `{}`), "read", []string{"a"}},
+	{"POST", "/_msearch", ndjson(`{"index":"a","indices":"secret"}`, `{}`), "read", []string{"a", "secret"}},
 
 	// cluster-level reads: the leading segment
 	{"GET", "/_cluster/health", "", "read", []string{"_cluster"}},
@@ -118,6 +128,15 @@ var requestClassification = []classifyCase{
 		`{"delete":{"_index":"prod-1","_id":"9"}}`,
 		`{"index":{"_index":"logs-2"}}`, `{"f":1}`,
 	), "delete", []string{"logs-1", "logs-2", "prod-1"}},
+	// ES pairs _bulk lines by position too: the line after index / create / update is
+	// its document even when empty, so a delete there is an action, not a document;
+	// an empty action line is skipped.
+	{"POST", "/_bulk", ndjson(
+		`{"index":{"_index":"logs-1"}}`, ``,
+		`{"delete":{"_index":"prod-1","_id":"9"}}`,
+	), "delete", []string{"logs-1", "prod-1"}},
+	{"POST", "/_bulk", ndjson(``, `{"delete":{"_index":"a","_id":"1"}}`, ` `), "delete", []string{"a"}},
+	{"POST", "/x/_bulk", ndjson(``, ` `), "write", []string{"x"}},
 
 	// delete: documents, indices, delete_by_query
 	{"DELETE", "/x/_doc/1", "", "delete", []string{"x"}},
@@ -149,10 +168,16 @@ var requestClassification = []classifyCase{
 	{"POST", "/_reindex", `{"source":{"index":["a","b"]},"dest":{"index":"c"}}`, "admin", []string{"a", "b", "c"}},
 	{"POST", "/_reindex", `{"source":{"index":"a,b"},"dest":{"index":"c"}}`, "admin", []string{"a", "b", "c"}},
 	{"POST", "/_reindex", "", "admin", []string{"*"}},
+	// a reindex script can send documents to any index (ctx._index)
+	{"POST", "/_reindex", `{"source":{"index":"a"},"dest":{"index":"c"},"script":{"source":"ctx._index = 'prod-1'"}}`, "admin", []string{"*"}},
 	{"POST", "/logs/_rollover/logs-000002", "", "admin", []string{"logs", "logs-000002"}},
 	{"POST", "/src/_clone/dst", "", "admin", []string{"dst", "src"}},
 	{"POST", "/src/_shrink/small", "", "admin", []string{"small", "src"}},
 	{"PUT", "/_data_stream/logs-app", "", "admin", []string{"logs-app"}},
+	// a _data_stream API segment is not a data stream: the one it acts on follows it
+	{"POST", "/_data_stream/_modify", `{"actions":[{"remove_backing_index":{"data_stream":"prod-1","index":".ds-prod-1-000001"}}]}`, "admin", []string{"*"}},
+	{"POST", "/_data_stream/_migrate/logs-app", "", "admin", []string{"logs-app"}},
+	{"GET", "/_data_stream/_stats", "", "read", []string{"*"}},
 
 	// admin: cluster-level APIs report their leading segment
 	{"PUT", "/_index_template/t", `{}`, "admin", []string{"_index_template"}},
@@ -185,6 +210,9 @@ var requestClassification = []classifyCase{
 	{"GET", "http://other:9200/_search", "", "admin", []string{"*"}},
 	{"GET", "//other/_search", "", "admin", []string{"*"}},
 	{"GET", "_search", "", "admin", []string{"*"}},
+	{"DELETE", "/logs-a/../prod-1", "", "admin", []string{"*"}},
+	{"DELETE", "/logs-a/%2e%2E/prod-1", "", "admin", []string{"*"}},
+	{"GET", "/./_search", "", "admin", []string{"*"}},
 }
 
 func sortedSet(in []string) []string {

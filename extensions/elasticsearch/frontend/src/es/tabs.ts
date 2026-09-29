@@ -84,14 +84,16 @@ function consoleId(number: number): string {
 }
 
 /**
- * The open consoles in tab order, as console.save stores them: `texts` holds
- * each console's current editor text by tab id, a console not in it (never
- * edited) its initial text.
+ * A console's current text: `texts` holds each console's latest editor text by
+ * tab id, a console not in it (never edited) has its initial text.
  */
+export function consoleText(tab: ConsoleTabModel, texts: ReadonlyMap<string, string>): string {
+  return texts.get(tab.id) ?? tab.initialText;
+}
+
+/** The open consoles in tab order, with their current text, as console.save stores them. */
 export function savedConsoles(state: TabsState, texts: ReadonlyMap<string, string>): SavedConsole[] {
-  return state.tabs.flatMap((t) =>
-    t.kind === "console" ? [{ number: t.number, text: texts.get(t.id) ?? t.initialText }] : []
-  );
+  return state.tabs.flatMap((t) => (t.kind === "console" ? [{ number: t.number, text: consoleText(t, texts) }] : []));
 }
 
 /** Reads console.load's result; any other shape is an error, not an empty list. */

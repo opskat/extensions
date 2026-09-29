@@ -34,10 +34,10 @@ HTTP status and Elasticsearch's own `type` and `reason` (for example
 
 `request` sends any REST call: a method, a path with its query string
 (`/logs-*/_count?q=level:error`) and optionally a body. The path must start with `/`
-and never contain a scheme or host. The result is `{status, body}` with the body
-parsed when it is JSON and as text otherwise; a 4xx or 5xx answer is a result, not a
-failure, so read `status` before trusting `body`. Only a cluster that cannot be
-reached fails the call.
+and never contain a scheme, a host, or `.` / `..` segments. The result is
+`{status, body}` with the body parsed when it is JSON and as text otherwise; a 4xx
+or 5xx answer is a result, not a failure, so read `status` before trusting `body`.
+Only a cluster that cannot be reached fails the call.
 
 Use APIs common to 7.10+, 8.x and 9.x. Ask `_cat` APIs for JSON (`?format=json`).
 `_bulk` and `_msearch` take NDJSON bodies (one JSON object per line).
@@ -71,9 +71,10 @@ Every call is classified as one action on a set of resources:
 
 The resources are the indices the call touches: each name in a comma-separated list,
 the indices named inside `_bulk`, `_mget` and `_msearch` bodies, and both source and
-destination of `_reindex`. `_all`, or an index API called without an index, is `*`;
-a pattern such as `logs-*` stays a pattern. A cluster-level API is its first path
-segment: `_cluster`, `_nodes`, `_snapshot`, `_security`, `_ilm`, `_ingest`, `_tasks`.
+destination of `_reindex` (every index when it runs a script). `_all`, or an index
+API called without an index, is `*`; a pattern such as `logs-*` stays a pattern. A
+cluster-level API is its first path segment: `_cluster`, `_nodes`, `_snapshot`,
+`_security`, `_ilm`, `_ingest`, `_tasks`.
 
 A new asset allows `read`. The read-write group adds `write`. `delete` and `admin`
 ask the user unless a rule allows them. The user can refine this with rules on the

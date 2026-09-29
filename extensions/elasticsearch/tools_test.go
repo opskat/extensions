@@ -135,7 +135,7 @@ func TestRequestTool(t *testing.T) {
 		Convey("a path carrying a scheme or host, or not starting with /, is refused without a request", func() {
 			host, seen := cluster(t, map[string]route{})
 			defer host.Close()
-			for _, p := range []string{"http://evil:9200/_search", "https://evil/x", "//evil/_search", "_search", "", " /_search"} {
+			for _, p := range []string{"http://evil:9200/_search", "https://evil/x", "//evil/_search", "_search", "", " /_search", "/logs/../_search", "/logs/%2e%2e/_search", "/./_search"} {
 				_, err := host.CallTool(esAsset, "request", map[string]any{"method": "GET", "path": p})
 				So(err, ShouldNotBeNil)
 				So(err.Error(), ShouldContainSubstring, "path")

@@ -29,7 +29,9 @@ var requestActions = []string{actionRead, actionWrite, actionDelete, actionAdmin
 // The path is appended to the asset's endpoint, so it must be exactly that — a
 // path starting with a single "/" — and never name a scheme or host of its own.
 // Segments are split before decoding, as ES does, so an encoded "/" inside a
-// date-math expression stays inside its segment.
+// date-math expression stays inside its segment. A "." or ".." segment (encoded
+// or not) is refused: a proxy in front of the cluster, or the endpoint's own path
+// prefix, would resolve it into a different path than the one classified.
 func parseRequestPath(p string) ([]string, error) {
 	if !strings.HasPrefix(p, "/") {
 		return nil, fmt.Errorf("path %q must start with / (a path and query string, without scheme or host)", p)
@@ -49,6 +51,9 @@ func parseRequestPath(p string) ([]string, error) {
 		seg, err := url.PathUnescape(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid path %q: %w", p, err)
+		}
+		if seg == "." || seg == ".." {
+			return nil, fmt.Errorf("path %q must not contain . or .. segments", p)
 		}
 		segs = append(segs, seg)
 	}
@@ -97,6 +102,11 @@ func classifyPath(method string, segs []string, body string) (string, []string) 
 	case indexScopedAPIs[first]:
 		return classifyAPI(method, segs, nil, body)
 	case first == "_data_stream":
+		// _modify, _migrate, _promote, _stats name the API; the data stream, if
+		// any, follows it.
+		if len(segs) > 1 && strings.HasPrefix(segs[1], "_") {
+			return classifyAPI(method, segs, targetsAt(segs, 2), body)
+		}
 		return classifyAPI(method, segs, targetsAt(segs, 1), body)
 	case first == "_resolve":
 		return classifyAPI(method, segs, targetsAt(segs, 2), body)
@@ -307,24 +317,34 @@ func indexValue(raw json.RawMessage) ([]string, bool) {
 	return out, true
 }
 
-func nonBlankLines(body string) []string {
-	var out []string
-	for _, l := range strings.Split(body, "\n") {
-		if strings.TrimSpace(l) != "" {
-			out = append(out, l)
-		}
+// ndjsonLines splits an NDJSON body into its lines as ES reads them: every "\n"
+// ends one, and text after the last "\n" is a line of its own (the request tool
+// adds the final newline ES requires). Blank lines are kept — ES pairs _bulk and
+// _msearch lines by position, blank ones included.
+func ndjsonLines(body string) []string {
+	lines := strings.Split(body, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
-	return out
+	return lines
 }
 
+func isBlank(line string) bool { return strings.TrimSpace(line) == "" }
+
 // bulkTargets collects the indices a bulk body writes: each action line's
-// _index, the path's scope for an action line without one. A line that is not an
-// action stops the scan and widens the call to every index — the pairing of the
-// remaining lines can no longer be trusted.
+// _index, the path's scope for an action line without one (or for a body with no
+// action at all). Lines pair as ES pairs them: a blank action line is skipped,
+// and the line after index / create / update is its document, blank or not. A
+// line that is not an action stops the scan and widens the call to every index —
+// the pairing of the remaining lines can no longer be trusted.
 func bulkTargets(body string, scope []string) (resources []string, deletes bool) {
-	lines := nonBlankLines(body)
-	usesScope := len(lines) == 0
+	lines := ndjsonLines(body)
+	usesScope, sawAction := false, false
 	for i := 0; i < len(lines); i++ {
+		if isBlank(lines[i]) {
+			continue
+		}
+		sawAction = true
 		var action map[string]json.RawMessage
 		if json.Unmarshal([]byte(lines[i]), &action) != nil || len(action) != 1 {
 			resources = append(resources, allIndices)
@@ -344,7 +364,7 @@ func bulkTargets(body string, scope []string) (resources []string, deletes bool)
 		case "delete":
 			deletes = true
 		case "index", "create", "update":
-			i++ // the source / partial document line
+			i++ // the source / partial document line, blank or not
 		default:
 			resources = append(resources, allIndices)
 			i = len(lines)
@@ -356,21 +376,30 @@ func bulkTargets(body string, scope []string) (resources []string, deletes bool)
 			resources = append(resources, indexResources(meta.Index)...)
 		}
 	}
-	if usesScope {
+	if usesScope || !sawAction {
 		resources = append(resources, scope...)
 	}
 	return resources, deletes
 }
 
-// msearchTargets collects each search header's index (or indices), the path's
-// scope for a header without one.
+// msearchTargets collects each search header's index and indices, the path's
+// scope for a header naming neither. Lines pair as ES pairs them: header, body,
+// header, … by position, a blank header line being an empty header; only a body
+// that starts with "\n" has that one line skipped.
 func msearchTargets(body string, scope []string) []string {
-	lines := nonBlankLines(body)
+	lines := ndjsonLines(body)
+	if strings.HasPrefix(body, "\n") {
+		lines = lines[1:]
+	}
 	if len(lines) == 0 {
 		return scope
 	}
 	var out []string
 	for i := 0; i < len(lines); i += 2 {
+		if isBlank(lines[i]) {
+			out = append(out, scope...)
+			continue
+		}
 		var header struct {
 			Index   json.RawMessage `json:"index"`
 			Indices json.RawMessage `json:"indices"`
@@ -378,19 +407,21 @@ func msearchTargets(body string, scope []string) []string {
 		if json.Unmarshal([]byte(lines[i]), &header) != nil {
 			return append(out, allIndices)
 		}
-		raw := header.Index
-		if raw == nil {
-			raw = header.Indices
+		named := false
+		for _, raw := range []json.RawMessage{header.Index, header.Indices} {
+			if raw == nil {
+				continue
+			}
+			indices, ok := indexValue(raw)
+			if !ok {
+				return append(out, allIndices)
+			}
+			out = append(out, indices...)
+			named = true
 		}
-		if raw == nil {
+		if !named {
 			out = append(out, scope...)
-			continue
 		}
-		indices, ok := indexValue(raw)
-		if !ok {
-			return append(out, allIndices)
-		}
-		out = append(out, indices...)
 	}
 	return out
 }
@@ -426,7 +457,8 @@ func mgetTargets(body string, targets []string) []string {
 }
 
 // reindexTargets is the source and destination of a reindex; either one missing
-// or unreadable widens the call to every index.
+// or unreadable widens the call to every index, and so does a script, which can
+// send each document to any index (ctx._index).
 func reindexTargets(body string) []string {
 	var req struct {
 		Source struct {
@@ -435,8 +467,9 @@ func reindexTargets(body string) []string {
 		Dest struct {
 			Index json.RawMessage `json:"index"`
 		} `json:"dest"`
+		Script json.RawMessage `json:"script"`
 	}
-	if json.Unmarshal([]byte(body), &req) != nil {
+	if json.Unmarshal([]byte(body), &req) != nil || req.Script != nil {
 		return []string{allIndices}
 	}
 	var out []string

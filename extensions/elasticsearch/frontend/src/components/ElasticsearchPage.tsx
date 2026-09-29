@@ -6,7 +6,7 @@ import { initialTabs, tabsReducer, type EsTab } from "../es/tabs";
 import { useT, type T } from "../i18n";
 import { useCluster, type ClusterData } from "../useCluster";
 import { useCompletionSource } from "../useCompletionSource";
-import { useConsolePersistence } from "../useConsolePersistence";
+import { useConsolePersistence, type ConsolePersistence } from "../useConsolePersistence";
 import { ConsoleTab } from "./console/ConsoleTab";
 import { IndexTab } from "./IndexTab";
 import { Overview } from "./Overview";
@@ -19,7 +19,7 @@ export function ElasticsearchPage({ assetId }: { assetId: number }) {
   const { t, lang } = useT();
   const { state, reload } = useCluster(assetId);
   const [tabs, dispatch] = useReducer(tabsReducer, initialTabs);
-  const onConsoleText = useConsolePersistence(assetId, tabs, dispatch);
+  const consoles = useConsolePersistence(assetId, tabs, dispatch);
   const data = state.status === "ready" ? state.data : null;
   const completion = useCompletionSource(assetId, data);
   const sidebar = useResizeHandle({
@@ -83,7 +83,7 @@ export function ElasticsearchPage({ assetId }: { assetId: number }) {
                 assetId={assetId}
                 data={data}
                 completion={completion}
-                onConsoleText={onConsoleText}
+                consoles={consoles}
                 t={t}
                 lang={lang}
               />
@@ -100,7 +100,7 @@ function TabContent({
   assetId,
   data,
   completion,
-  onConsoleText,
+  consoles,
   t,
   lang,
 }: {
@@ -108,7 +108,7 @@ function TabContent({
   assetId: number;
   data: ClusterData | null;
   completion: CompletionSource;
-  onConsoleText: (id: string, text: string) => void;
+  consoles: ConsolePersistence;
   t: T;
   lang: string;
 }) {
@@ -132,7 +132,7 @@ function TabContent({
           assetId={assetId}
           tab={tab}
           completion={completion}
-          onTextChange={onConsoleText}
+          consoles={consoles}
           t={t}
           lang={lang}
         />

@@ -1,15 +1,21 @@
-import { useCallback, useEffect, useRef, type Dispatch } from "react";
-import { savedConsoles, type TabsAction, type TabsState } from "./es/tabs";
+import { useCallback, useEffect, useMemo, useRef, type Dispatch } from "react";
+import { consoleText, savedConsoles, type ConsoleTabModel, type TabsAction, type TabsState } from "./es/tabs";
 import { loadConsoles, saveConsoles } from "./host";
 
 /** Edits are saved this long after the last one. */
 const SAVE_DELAY_MS = 600;
 
+export interface ConsolePersistence {
+  /** Every edit of a console's text. */
+  onTextChange: (id: string, text: string) => void;
+  /** A console's latest text: what its editor starts with when it mounts again. */
+  textOf: (tab: ConsoleTabModel) => string;
+}
+
 /**
  * Keeps the page's console tabs and their text in the extension's storage, per
  * asset: restores them when the page opens, then saves shortly after every
- * change and once more when the page closes. Returns the consoles' text-change
- * handler. Index tabs are not kept.
+ * change and once more when the page closes. Index tabs are not kept.
  *
  * Nothing is saved until the saved tabs are loaded — otherwise a page that opens
  * would overwrite them with its own empty set — so if loading fails, this page
@@ -19,7 +25,7 @@ export function useConsolePersistence(
   assetId: number,
   tabs: TabsState,
   dispatch: Dispatch<TabsAction>
-): (id: string, text: string) => void {
+): ConsolePersistence {
   const texts = useRef(new Map<string, string>());
   const tabsRef = useRef(tabs);
   const loaded = useRef(false);
@@ -79,11 +85,13 @@ export function useConsolePersistence(
     [save]
   );
 
-  return useCallback(
+  const onTextChange = useCallback(
     (id: string, text: string) => {
       texts.current.set(id, text);
       schedule();
     },
     [schedule]
   );
+  const textOf = useCallback((tab: ConsoleTabModel) => consoleText(tab, texts.current), []);
+  return useMemo(() => ({ onTextChange, textOf }), [onTextChange, textOf]);
 }

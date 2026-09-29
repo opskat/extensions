@@ -10,6 +10,7 @@ import { formatBytes, formatNumber } from "../../es/format";
 import type { ConsoleTabModel } from "../../es/tabs";
 import { esRequest } from "../../host";
 import type { T } from "../../i18n";
+import type { ConsolePersistence } from "../../useConsolePersistence";
 import { atMost, CONSOLE_LANGUAGE, ES_EDITOR_OPTIONS, setupEsEditor } from "./esEditor";
 
 /** How long completion waits for aliases / a mapping before showing what it has. */
@@ -27,8 +28,12 @@ export interface ConsoleTabProps {
   tab: ConsoleTabModel;
   /** The page's completion data: its loaded indices, aliases and mappings on demand. */
   completion: CompletionSource;
-  /** Every edit, for the page to save the console (useConsolePersistence). */
-  onTextChange: (id: string, text: string) => void;
+  /**
+   * The page's saved consoles: every edit goes to them, and the editor starts from
+   * the console's latest text — a console mounted again (after a page-level error
+   * and retry) keeps its edits rather than its restored text.
+   */
+  consoles: ConsolePersistence;
   t: T;
   lang: string;
 }
@@ -42,8 +47,8 @@ const requestLabel = (r: ConsoleRequest) => `${r.method} ${r.path}`;
  * the last one run on the right. ⌘/Ctrl+Enter or Run sends the request under the
  * cursor as-is — no confirmation, whatever it does (design decision 8).
  */
-export function ConsoleTab({ assetId, tab, completion, onTextChange, t, lang }: ConsoleTabProps) {
-  const [text, setText] = useState(tab.initialText);
+export function ConsoleTab({ assetId, tab, completion, consoles, t, lang }: ConsoleTabProps) {
+  const [text, setText] = useState(() => consoles.textOf(tab));
   const [cursorLine, setCursorLine] = useState(0);
   const [response, setResponse] = useState<Response>({ status: "idle" });
   const [view, setView] = useState<"tree" | "raw">("tree");
@@ -128,7 +133,7 @@ export function ConsoleTab({ assetId, tab, completion, onTextChange, t, lang }: 
 
   const onChange = (value: string) => {
     setText(value);
-    onTextChange(tab.id, value);
+    consoles.onTextChange(tab.id, value);
   };
 
   const loading = response.status === "loading";
