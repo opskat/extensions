@@ -36,8 +36,10 @@ make build EXT=elasticsearch   # -> extensions/elasticsearch/dist/
 make test EXT=elasticsearch
 ```
 
-Building needs Go with `GOOS=wasip1` support. `dist/` is a complete extension
-directory: main.wasm, manifest.json, SKILL.md when present, and locales/.
+Building needs Go with `GOOS=wasip1` support, and Node.js with pnpm for an extension
+that has a `frontend/`. `dist/` is a complete extension directory: main.wasm,
+manifest.json, SKILL.md when present, locales/, and the built page under frontend/
+when the extension has one.
 
 ## Install locally
 

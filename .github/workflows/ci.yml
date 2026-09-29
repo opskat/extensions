@@ -27,6 +27,8 @@ jobs:
         with:
           node-version: '22'
           cache: 'pnpm'
+          # Lockfiles live per extension; setup-node only looks in the repo root by default.
+          cache-dependency-path: extensions/*/frontend/pnpm-lock.yaml
 
       - name: Run CI
         run: make ci

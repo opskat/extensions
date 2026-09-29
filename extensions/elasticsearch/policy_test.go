@@ -52,9 +52,12 @@ var requestClassification = []classifyCase{
 	{"POST", "/_sql?format=json", `{"query":"SELECT 1"}`, "read", []string{"*"}},
 	{"POST", "/_sql/close", `{"cursor":"c"}`, "read", []string{"*"}},
 	{"POST", "/x/_eql/search", `{}`, "read", []string{"x"}},
-	{"DELETE", "/_eql/search/abc", "", "read", []string{"*"}},
+	// Only clearing a scroll and closing a point in time are reads among DELETEs;
+	// deleting a stored async / EQL / SQL search result is admin like any other.
+	{"DELETE", "/_eql/search/abc", "", "admin", []string{"*"}},
 	{"POST", "/x/_async_search", `{}`, "read", []string{"x"}},
-	{"DELETE", "/_async_search/abc", "", "read", []string{"*"}},
+	{"DELETE", "/_async_search/abc", "", "admin", []string{"*"}},
+	{"DELETE", "/_sql/async/delete/abc", "", "admin", []string{"*"}},
 	{"POST", "/x/_search/template", `{"id":"t"}`, "read", []string{"x"}},
 	{"POST", "/_render/template", `{"id":"t"}`, "read", []string{"*"}},
 	{"POST", "/x/_pit?keep_alive=1m", "", "read", []string{"x"}},

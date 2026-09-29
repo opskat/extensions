@@ -34,8 +34,9 @@ make build EXT=elasticsearch   # 产出 extensions/elasticsearch/dist/
 make test EXT=elasticsearch
 ```
 
-构建需要支持 `GOOS=wasip1` 的 Go。`dist/` 是完整的扩展目录：main.wasm、manifest.json、
-SKILL.md（若有）和 locales/。
+构建需要支持 `GOOS=wasip1` 的 Go；带 `frontend/` 的扩展还需要 Node.js 与 pnpm。`dist/`
+是完整的扩展目录：main.wasm、manifest.json、SKILL.md（若有）、locales/，以及扩展带页面时
+构建出的 frontend/。
 
 ## 本地安装
 

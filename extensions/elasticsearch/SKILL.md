@@ -58,7 +58,8 @@ Every call is classified as one action on a set of resources:
 
 - `read` — GET and HEAD, plus searches sent as POST (`_search`, `_msearch`, `_count`,
   `_mget`, `_field_caps`, `_validate`, `_explain`, term vectors, SQL, EQL, async
-  search, search templates, point in time and scroll, including closing them).
+  search, search templates, point in time and scroll, including clearing a scroll and
+  closing a point in time).
   `health`, `indices`, `mapping` and `search` are always `read`.
 - `write` — document writes: `_doc`, `_create`, `_update`, `_bulk`, `_update_by_query`.
 - `delete` — deleting documents or indices, `_delete_by_query`, a `_bulk` body that

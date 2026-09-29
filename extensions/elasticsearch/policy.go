@@ -222,9 +222,9 @@ func classifyAPI(method string, api []string, targets []string, body string) (st
 	return actionAdmin, scope
 }
 
-// closesReadContext reports a DELETE that releases a search context rather than
-// deleting data: clear scroll, close point in time, delete an async search / EQL /
-// SQL result.
+// closesReadContext reports the two DELETEs that release a search context rather
+// than deleting anything: clearing a scroll and closing a point in time. Deleting
+// a stored async / EQL / SQL search result is not one of them and stays admin.
 func closesReadContext(api []string, targets []string) bool {
 	if targets != nil {
 		return false
@@ -232,12 +232,8 @@ func closesReadContext(api []string, targets []string) bool {
 	switch api[0] {
 	case "_search":
 		return len(api) >= 2 && api[1] == "scroll"
-	case "_pit", "_sql":
+	case "_pit":
 		return true
-	case "_async_search":
-		return len(api) >= 2
-	case "_eql":
-		return len(api) >= 3 && api[1] == "search"
 	}
 	return false
 }
