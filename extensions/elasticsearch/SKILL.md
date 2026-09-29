@@ -18,7 +18,8 @@ Reach for these first; their results are compact and their errors say what went 
   shard counts (active, primary, unassigned). Start here when diagnosing a cluster.
 - `indices` — index name, health, status, document count and store size (bytes).
   Narrow it with a pattern such as `logs-*`; hidden and system indices (names
-  starting with `.`) are listed only when asked for.
+  starting with `.`) are listed only with `--include-hidden` or a pattern that
+  itself starts with `.` (such as `.kibana*`).
 - `mapping` — the field mapping of an index. Read it before writing a query against
   fields you have not seen.
 - `search` — hits (`_index`, `_id`, `_source`), total and time taken. Give either a

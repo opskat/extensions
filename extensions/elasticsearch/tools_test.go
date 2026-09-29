@@ -227,6 +227,14 @@ func TestIndicesTool(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(indexNames(t, out), ShouldResemble, []string{".geoip_databases", "logs-1"})
 		})
+		Convey("a pattern naming indices that start with . lists them, as ES itself does", func() {
+			host, _ := cluster(t, map[string]route{"/gw/_cat/indices/.geoip*": {status: 200,
+				body: `[{"health":"green","status":"open","index":".geoip_databases","docs.count":"1","store.size":"1"}]`}})
+			defer host.Close()
+			out, err := host.CallTool(esAsset, "indices", map[string]any{"pattern": ".geoip*"})
+			So(err, ShouldBeNil)
+			So(indexNames(t, out), ShouldResemble, []string{".geoip_databases"})
+		})
 		Convey("narrows to a pattern and includes hidden indices on request", func() {
 			host, seen := cluster(t, map[string]route{"/gw/_cat/indices/logs-*,.ds-*": {status: 200, body: `[]`}})
 			defer host.Close()

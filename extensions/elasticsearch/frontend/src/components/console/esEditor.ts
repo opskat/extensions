@@ -87,16 +87,16 @@ export interface EditorCompletion {
 }
 
 /**
- * Editor options for the page's languages. JSON keys are string tokens, and the
- * host's editor does not pop suggestions up inside strings by default.
- */
-/**
  * The DSL box in the documents toolbar sits in a flex row whose height comes from
  * its content, so a percentage height resolves to nothing (measured 266×5). It
  * gets a pixel height, inline so no stylesheet decides it.
  */
 export const DSL_EDITOR_FRAME = { height: 96, minHeight: 96 } as const;
 
+/**
+ * Editor options for the page's languages. JSON keys are string tokens, and the
+ * host's editor does not pop suggestions up inside strings by default.
+ */
 export const ES_EDITOR_OPTIONS = { quickSuggestions: { other: true, comments: false, strings: true } };
 
 /**

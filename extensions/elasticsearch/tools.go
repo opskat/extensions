@@ -267,10 +267,13 @@ func handleIndices(ctx *opskat.ToolContext, args indicesArgs) (any, error) {
 	if err := c.call(http.MethodGet, p+"?"+q.Encode(), "", &rows); err != nil {
 		return nil, err
 	}
+	// 7.x does not flag its system indices hidden, so they are hidden by name —
+	// unless the pattern itself names indices starting with ".", which ES reads as
+	// asking for them too.
+	showDot := args.IncludeHidden || namesDotIndices(args.Pattern)
 	out := make([]indexInfo, 0, len(rows))
 	for _, r := range rows {
-		// 7.x does not flag its system indices hidden, so hide by name.
-		if !args.IncludeHidden && strings.HasPrefix(r.Index, ".") {
+		if !showDot && strings.HasPrefix(r.Index, ".") {
 			continue
 		}
 		docs, err := optionalCount(r.DocsCount)
@@ -285,6 +288,16 @@ func handleIndices(ctx *opskat.ToolContext, args indicesArgs) (any, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return map[string]any{"indices": out}, nil
+}
+
+// namesDotIndices reports a pattern with an expression starting with ".".
+func namesDotIndices(pattern string) bool {
+	for _, expr := range strings.Split(pattern, ",") {
+		if strings.HasPrefix(strings.TrimSpace(expr), ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // optionalCount parses a _cat number, which ES sends as a string (null when the
