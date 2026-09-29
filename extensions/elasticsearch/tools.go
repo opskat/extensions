@@ -406,6 +406,23 @@ func handleSearch(ctx *opskat.ToolContext, args searchArgs) (any, error) {
 
 // The convenience tools only read; each reports what it names.
 
+// checkIndexSegment refuses an index expression that is a "." or ".." path
+// segment of its own: the convenience tools put it into the request path, where a
+// proxy in front of the cluster or the endpoint's own path prefix would resolve it
+// into a different path than the one classified (see parseRequestPath).
+func checkIndexSegment(expr string) error {
+	if expr == "." || expr == ".." {
+		return fmt.Errorf("%q is not an index name or pattern", expr)
+	}
+	return nil
+}
+
+func rejectIndices(args indicesArgs) error { return checkIndexSegment(args.Pattern) }
+
+func rejectMapping(args mappingArgs) error { return checkIndexSegment(args.Index) }
+
+func rejectSearch(args searchArgs) error { return checkIndexSegment(args.Index) }
+
 func classifyIndices(args indicesArgs) (string, []string) {
 	if args.Pattern == "" {
 		return actionRead, []string{allIndices}

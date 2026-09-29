@@ -72,6 +72,9 @@ var requestClassification = []classifyCase{
 	{"POST", "/x/_mget", `{"docs":[{"_id":"1"},{"_index":"y","_id":"2"}]}`, "read", []string{"x", "y"}},
 	{"POST", "/_mget", `{"docs":[{"_id":"1"}]}`, "read", []string{"*"}},
 	{"POST", "/_mget", `not json`, "read", []string{"*"}},
+	// _mtermvectors takes the same docs / ids body as _mget
+	{"POST", "/logs/_mtermvectors", `{"docs":[{"_index":"prod-1","_id":"1"}]}`, "read", []string{"prod-1"}},
+	{"POST", "/x/_mtermvectors", `{"ids":["1"]}`, "read", []string{"x"}},
 	{"POST", "/a/_msearch", ndjson(
 		`{"index":"b"}`, `{"query":{}}`,
 		`{}`, `{"query":{}}`,
@@ -174,6 +177,7 @@ var requestClassification = []classifyCase{
 	{"POST", "/logs/_rollover/logs-000002", "", "admin", []string{"logs", "logs-000002"}},
 	{"POST", "/src/_clone/dst", "", "admin", []string{"dst", "src"}},
 	{"POST", "/src/_shrink/small", "", "admin", []string{"small", "src"}},
+	{"POST", "/src/_downsample/rollup", `{"fixed_interval":"1h"}`, "admin", []string{"rollup", "src"}},
 	{"PUT", "/_data_stream/logs-app", "", "admin", []string{"logs-app"}},
 	// a _data_stream API segment is not a data stream: the one it acts on follows it
 	{"POST", "/_data_stream/_modify", `{"actions":[{"remove_backing_index":{"data_stream":"prod-1","index":".ds-prod-1-000001"}}]}`, "admin", []string{"*"}},
@@ -266,11 +270,42 @@ func TestRequestRejection(t *testing.T) {
 			So(errors.As(err, &rejected), ShouldBeTrue)
 			So(rejected.Reason, ShouldContainSubstring, "path")
 		}
-		_, _, err := host.CheckPolicy("request", map[string]any{"method": "TRACE", "path": "/"})
+		// ES runs a ?source= parameter as the request body when the body is empty,
+		// which the classification never reads.
+		for _, path := range []string{`/logs/_msearch?source={"index":"prod-1"}%0A{}%0A&source_content_type=application/x-ndjson`, "/logs/_mget?%73ource=x", "/logs/_mget?pretty=1;source=x"} {
+			_, _, err := host.CheckPolicy("request", map[string]any{"method": "GET", "path": path})
+			var rejected *opskat.ArgsRejectedError
+			So(errors.As(err, &rejected), ShouldBeTrue)
+			So(rejected.Reason, ShouldContainSubstring, "source")
+		}
+		_, _, err := host.CheckPolicy("request", map[string]any{"method": "GET", "path": "/logs/_search?_source=false"})
+		So(err, ShouldBeNil)
+		_, _, err = host.CheckPolicy("request", map[string]any{"method": "TRACE", "path": "/"})
 		var rejected *opskat.ArgsRejectedError
 		So(errors.As(err, &rejected), ShouldBeTrue)
 		So(rejected.Reason, ShouldContainSubstring, "method")
 		_, _, err = host.CheckPolicy("request", map[string]any{"method": "get", "path": "/_search"})
+		So(err, ShouldBeNil)
+	})
+
+	Convey("a convenience tool refuses an index that is a . or .. path segment", t, func() {
+		host := opskat.NewTestHost()
+		defer host.Close()
+		for _, c := range []struct {
+			tool string
+			args map[string]any
+		}{
+			{"mapping", map[string]any{"index": ".."}},
+			{"search", map[string]any{"index": "."}},
+			{"indices", map[string]any{"pattern": ".."}},
+		} {
+			_, _, err := host.CheckPolicy(c.tool, c.args)
+			var rejected *opskat.ArgsRejectedError
+			So(errors.As(err, &rejected), ShouldBeTrue)
+			_, err = host.CallTool(esAsset, c.tool, c.args)
+			So(errors.As(err, &rejected), ShouldBeTrue)
+		}
+		_, _, err := host.CheckPolicy("indices", map[string]any{"pattern": ".geoip*"})
 		So(err, ShouldBeNil)
 	})
 }

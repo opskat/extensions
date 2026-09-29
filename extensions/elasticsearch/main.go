@@ -57,12 +57,15 @@ func init() {
 		Policy(actionRead).Resource(func(healthArgs) string { return "_cluster" }).
 		Doc("tools.health.description")
 	opskat.Tool("indices", handleIndices).
+		RejectArgs(rejectIndices).
 		PolicyResources([]string{actionRead}, classifyIndices).
 		Doc("tools.indices.description")
 	opskat.Tool("mapping", handleMapping).
+		RejectArgs(rejectMapping).
 		PolicyResources([]string{actionRead}, classifyMapping).
 		Doc("tools.mapping.description")
 	opskat.Tool("search", handleSearch).
+		RejectArgs(rejectSearch).
 		PolicyResources([]string{actionRead}, classifySearch).
 		Doc("tools.search.description")
 

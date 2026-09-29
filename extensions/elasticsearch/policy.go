@@ -31,7 +31,9 @@ var requestActions = []string{actionRead, actionWrite, actionDelete, actionAdmin
 // Segments are split before decoding, as ES does, so an encoded "/" inside a
 // date-math expression stays inside its segment. A "." or ".." segment (encoded
 // or not) is refused: a proxy in front of the cluster, or the endpoint's own path
-// prefix, would resolve it into a different path than the one classified.
+// prefix, would resolve it into a different path than the one classified. So is a
+// source query parameter: ES runs it as the request body when the body is empty,
+// and the classification reads only the body.
 func parseRequestPath(p string) ([]string, error) {
 	if !strings.HasPrefix(p, "/") {
 		return nil, fmt.Errorf("path %q must start with / (a path and query string, without scheme or host)", p)
@@ -42,6 +44,18 @@ func parseRequestPath(p string) ([]string, error) {
 	u, err := url.Parse(p)
 	if err != nil {
 		return nil, fmt.Errorf("invalid path %q: %w", p, err)
+	}
+	// Split on ';' as well as '&': a separator ES's query decoder might honour must
+	// not hide a source parameter inside another parameter's value.
+	for _, pair := range strings.FieldsFunc(u.RawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		key, _, _ := strings.Cut(pair, "=")
+		name, err := url.QueryUnescape(key)
+		if err != nil {
+			return nil, fmt.Errorf("invalid query string in path %q: %w", p, err)
+		}
+		if name == "source" {
+			return nil, fmt.Errorf("path %q must not carry a source parameter; send the request body as body", p)
+		}
 	}
 	var segs []string
 	for _, raw := range strings.Split(u.EscapedPath(), "/") {
@@ -173,7 +187,7 @@ func classifyAPI(method string, api []string, targets []string, body string) (st
 			return actionDelete, resources
 		}
 		return actionWrite, resources
-	case "_mget":
+	case "_mget", "_mtermvectors":
 		return readOrAdmin(method, mgetTargets(body, targets))
 	case "_msearch":
 		return readOrAdmin(method, msearchTargets(body, scope))
@@ -198,7 +212,7 @@ func classifyAPI(method string, api []string, targets []string, body string) (st
 			return actionDelete, resources
 		}
 		return actionAdmin, resources
-	case "_rollover", "_shrink", "_split", "_clone":
+	case "_rollover", "_shrink", "_split", "_clone", "_downsample":
 		// The new index named after the API is touched as much as the source.
 		return actionAdmin, append(append([]string{}, scope...), targetsAt(api, 1)...)
 	}
@@ -434,8 +448,9 @@ func msearchTargets(body string, scope []string) []string {
 	return out
 }
 
-// mgetTargets collects each doc's _index; ids, and docs without one, read from
-// the path's index (every index when the path names none).
+// mgetTargets collects each doc's _index in an _mget or _mtermvectors body (the
+// two share it); ids, and docs without one, read from the path's index (every
+// index when the path names none).
 func mgetTargets(body string, targets []string) []string {
 	var req struct {
 		Docs []struct {
