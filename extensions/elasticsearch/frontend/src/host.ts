@@ -27,12 +27,37 @@ function executeAction(action: string, args: unknown, assetId: number): Promise<
   return window.__OPSKAT_EXT__.api.executeAction(EXT_NAME, action, args, undefined, assetId);
 }
 
+/** Each asset's last queued console.load / console.save, settled either way. */
+const consoleCalls = new Map<number, Promise<void>>();
+
+/**
+ * Runs an asset's console calls one after another, in the order the page made
+ * them. The host runs calls concurrently, so otherwise a page reopened right after
+ * closing could load before its closing save is stored, and two saves could land
+ * out of order — either way the older text would win.
+ */
+function inConsoleOrder<T>(assetId: number, call: () => Promise<T>): Promise<T> {
+  const result = (consoleCalls.get(assetId) ?? Promise.resolve()).then(call);
+  // The next call waits for this one to finish, not to succeed; its error still reaches its caller.
+  const settled = result.then(
+    () => undefined,
+    () => undefined
+  );
+  consoleCalls.set(assetId, settled);
+  void settled.then(() => {
+    if (consoleCalls.get(assetId) === settled) consoleCalls.delete(assetId);
+  });
+  return result;
+}
+
 /** The asset's saved console tabs (console.go). */
-export async function loadConsoles(assetId: number): Promise<SavedConsole[]> {
-  return parseSavedConsoles(await executeAction("console.load", {}, assetId));
+export function loadConsoles(assetId: number): Promise<SavedConsole[]> {
+  return inConsoleOrder(assetId, async () => parseSavedConsoles(await executeAction("console.load", {}, assetId)));
 }
 
 /** Replaces the asset's saved console tabs. */
-export async function saveConsoles(assetId: number, consoles: SavedConsole[]): Promise<void> {
-  await executeAction("console.save", { consoles }, assetId);
+export function saveConsoles(assetId: number, consoles: SavedConsole[]): Promise<void> {
+  return inConsoleOrder(assetId, async () => {
+    await executeAction("console.save", { consoles }, assetId);
+  });
 }
