@@ -1,6 +1,7 @@
 {
   "name": "elasticsearch",
   "version": "0.1.0",
+  "minAppVersion": "1.14.1",
   "hostABI": "2.2",
   "backend": {
     "runtime": "wasm",
