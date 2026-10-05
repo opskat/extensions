@@ -50,4 +50,37 @@ opsctl ext dev "$PWD/extensions/elasticsearch/dist"
 
 ## 发布
 
-发布产物与扩展索引由扩展商店负责，不在本仓库内处理。
+扩展经 CI 进入 OpsKat 扩展商店，不需要手工上传。仓库根目录的 `index.json` 列出所有已发布版本，
+`index.json.sig` 是它的 ed25519 签名，应用验签通过后才展示商店。
+
+1. **在 PR 里改版本号。** 修改 `extensions/<name>/manifest.json` 的 `version`
+   （`MAJOR.MINOR.PATCH`）。若版本低于 `index.json` 里该扩展已发布的最高版本，`index-check`
+   任务会让 PR 检查失败；本地用 `make index-check` 可得到同样的结果。
+2. **合并。** 推到 `main` 后，`publish` 任务执行 `make publish`：对 manifest 版本还不在
+   `index.json` 里的每个扩展，用 `make build` 构建 `dist/`，打成 zip（`manifest.json` 位于 zip
+   根），经 OpsKat 自己的扩展加载流程载入该 zip，读出应用将展示的显示名、说明、图标、能力、`hostABI`
+   与 `minAppVersion`，以单层 OCI 制品推到 `ghcr.io/opskat/extensions/<name>:<version>`，并记录
+   sha256 与大小；随后签名 `index.json`，把 `index.json` 与 `index.json.sig` 提交回 `main`。
+   这次提交带 `[skip ci]`，不会再次触发发布。
+
+已在 `index.json` 里的版本不会重建、不会覆盖：要发布改动就升版本号。任一步失败则任务失败、什么都不提交，
+因此 `index.json` 里的每个版本都一定已在 registry 中。
+
+工具在 `tools/publish`，是独立的 Go 模块（`go -C tools/publish run . -h`）：`check`（PR 检查）、
+`publish`、`keygen`。`make ci` 会跑它的测试。
+
+### 维护者配置
+
+只需做一次；合并后的首次发布即可看出是否配置正确。
+
+1. **生成签名密钥对**：`go -C tools/publish run . keygen`，输出 `private:` 与 `public:` 两行，
+   均为标准 base64。私钥绝不提交进仓库。
+2. **把私钥加为仓库 Secret**，名为 `EXTENSION_INDEX_SIGNING_KEY`（Settings → Secrets and
+   variables → Actions）。缺少时发布失败，报错会点名该 Secret。
+3. **把公钥放进应用**：加入 OpsKat 内置的受信索引公钥列表并随版本发布。轮换时先把新公钥加进应用、
+   旧公钥保留（应用接受任一受信公钥的签名），再替换 Secret。
+4. **把包设为公开**：扩展首次发布后，把 `ghcr.io/opskat/extensions/<name>` 设为 public
+   （组织 → Packages → 包设置 → Change visibility），应用才能免登录拉取；同一页面的
+   "Manage Actions access" 需给本仓库写权限。
+5. **允许 CI 推送 `main`**：Settings → Actions → General → Workflow permissions 选
+   "Read and write permissions"；若 `main` 有保护规则，需允许 GitHub Actions 绕过，否则索引提交会被拒绝。

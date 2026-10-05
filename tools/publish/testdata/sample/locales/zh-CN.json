@@ -1,0 +1,6 @@
+{
+  "assetType.sample.name": "示例服务器",
+  "extension.displayName": "示例",
+  "extension.description": "发布工具测试用的扩展",
+  "tools.ping.description": "回显消息"
+}
