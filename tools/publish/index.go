@@ -82,7 +82,7 @@ func highestVersion(ext *extstore.Extension) string {
 
 // compareVersions orders two MAJOR.MINOR.PATCH versions numerically. Every
 // version here comes from a manifest.json, which extension.ParseManifest holds to
-// exactly that shape.
+// exactly that shape (semverRe).
 func compareVersions(a, b string) int {
 	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
 	for i := range min(len(pa), len(pb)) {

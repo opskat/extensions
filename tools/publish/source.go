@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -19,13 +20,34 @@ type source struct {
 	manifest *extension.Manifest
 }
 
-// scanSources reads extensions/*/manifest.json under root, ordered by name.
+var (
+	// semverRe is the version shape extension.ParseManifest holds manifests to.
+	semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	// repoNameRe is a registry repository path component (OCI distribution
+	// spec); an extension name is pushed as one.
+	repoNameRe = regexp.MustCompile(`^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*$`)
+)
+
+// validName fails for an extension name the registry would refuse as a
+// repository, though the host's manifest rules accept it (a trailing "-", "_-").
+func validName(name string) error {
+	if !repoNameRe.MatchString(name) {
+		return fmt.Errorf("extension name %q is not a valid registry repository name: "+
+			"lowercase letters and digits joined by \".\", \"_\", \"__\" or dashes", name)
+	}
+	return nil
+}
+
+// scanSources reads extensions/*/manifest.json under root, ordered by name. Two
+// directories naming the same extension, or a name the registry would refuse,
+// fail here — check runs it, so a pull request finds out before the push does.
 func scanSources(root string) ([]source, error) {
 	entries, err := os.ReadDir(filepath.Join(root, "extensions"))
 	if err != nil {
 		return nil, err
 	}
 	var out []source
+	dirOf := map[string]string{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -42,6 +64,13 @@ func scanSources(root string) ([]source, error) {
 		if err != nil {
 			return nil, fmt.Errorf("extensions/%s/manifest.json: %w", entry.Name(), err)
 		}
+		if err := validName(m.Name); err != nil {
+			return nil, fmt.Errorf("extensions/%s/manifest.json: %w", entry.Name(), err)
+		}
+		if other, dup := dirOf[m.Name]; dup {
+			return nil, fmt.Errorf("extensions/%s and extensions/%s both name extension %q", other, entry.Name(), m.Name)
+		}
+		dirOf[m.Name] = entry.Name()
 		out = append(out, source{dir: dir, manifest: m})
 	}
 	slices.SortFunc(out, func(a, b source) int { return strings.Compare(a.manifest.Name, b.manifest.Name) })

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -40,36 +41,68 @@ type publisher struct {
 // will describe it.
 type release struct {
 	name    string
-	meta    packageMeta
+	display map[string]extstore.Display
+	icon    string
 	file    string
 	version extstore.Version
 }
 
 // publish releases every extension whose manifest version is not in the index:
-// build, package, describe, push, then append the entries and sign. Versions the
-// index already lists are left alone. The index is written only after every push
-// succeeded, so a version in the index is always in the registry. It returns the
-// "<name>:<version>" pairs it published; with nothing new it writes nothing.
+// prepare (build, package, describe) into a temporary directory, then release
+// (push, append the entries and sign). Versions the index already lists are left
+// alone. It returns the "<name>:<version>" pairs it published; with nothing new
+// it writes nothing.
+//
+// CI runs the two halves as separate jobs so the extension builds never share a
+// machine with the signing key; publish is both on one machine, for a maintainer.
 func (p *publisher) publish(ctx context.Context) ([]string, error) {
-	idx, err := loadIndex(filepath.Join(p.root, indexFile))
+	staged, err := os.MkdirTemp("", "publish-")
 	if err != nil {
 		return nil, err
+	}
+	defer os.RemoveAll(staged)
+	if err := p.prepare(ctx, staged); err != nil {
+		return nil, err
+	}
+	return p.release(ctx, staged)
+}
+
+// stagedRelease is one prepared version as releases.json records it. The
+// package is <name>-<version>.zip beside it; its ref, sha256 and size are filled
+// in by release from the file itself.
+type stagedRelease struct {
+	Name    string                      `json:"name"`
+	Display map[string]extstore.Display `json:"display"`
+	Icon    string                      `json:"icon"`
+	Version extstore.Version            `json:"version"`
+}
+
+// releasesFile lists the prepared versions in the staging directory.
+const releasesFile = "releases.json"
+
+func packageFile(dir, name, version string) string {
+	return filepath.Join(dir, name+"-"+version+".zip")
+}
+
+// prepare builds, packages and describes every extension whose manifest version
+// is not in the index into out: one zip per version plus releases.json (an empty
+// list when there is nothing new). It needs no key and touches no registry.
+func (p *publisher) prepare(ctx context.Context, out string) error {
+	idx, err := loadIndex(filepath.Join(p.root, indexFile))
+	if err != nil {
+		return err
 	}
 	sources, err := scanSources(p.root)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := checkVersions(idx, sources); err != nil {
-		return nil, err
+		return err
 	}
-
-	work, err := os.MkdirTemp("", "publish-")
-	if err != nil {
-		return nil, err
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return err
 	}
-	defer os.RemoveAll(work)
-
-	var releases []release
+	releases := []stagedRelease{}
 	for _, src := range sources {
 		name, version := src.manifest.Name, src.manifest.Version
 		if ext := findExtension(&idx, name); ext != nil && hasVersion(ext, version) {
@@ -77,11 +110,61 @@ func (p *publisher) publish(ctx context.Context) ([]string, error) {
 			continue
 		}
 		fmt.Fprintf(p.log, "building %s %s\n", name, version)
-		r, err := p.prepare(ctx, src, work)
+		r, err := p.stage(ctx, src, out)
 		if err != nil {
-			return nil, fmt.Errorf("%s %s: %w", name, version, err)
+			return fmt.Errorf("%s %s: %w", name, version, err)
 		}
 		releases = append(releases, r)
+	}
+	data, err := json.MarshalIndent(releases, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(out, releasesFile), data, 0o644) //nolint:gosec // build output, not secret
+}
+
+// release pushes what prepare staged in dir and appends it to the index, then
+// signs. A staged version the index already has, or one below its newest (a run
+// staged from an older commit releasing after a newer one), is skipped. The
+// index is written only after every push succeeded, so a version in the index is
+// always in the registry.
+func (p *publisher) release(ctx context.Context, dir string) ([]string, error) {
+	idx, err := loadIndex(filepath.Join(p.root, indexFile))
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, releasesFile)) //nolint:gosec // the staging directory we were given
+	if err != nil {
+		return nil, err
+	}
+	var staged []stagedRelease
+	if err := json.Unmarshal(data, &staged); err != nil {
+		return nil, fmt.Errorf("%s: %w", releasesFile, err)
+	}
+
+	var releases []release
+	for _, s := range staged {
+		name, version := s.Name, s.Version.Version
+		if err := validName(name); err != nil {
+			return nil, fmt.Errorf("%s: %w", releasesFile, err)
+		}
+		if !semverRe.MatchString(version) {
+			return nil, fmt.Errorf("%s: %s has version %q, want MAJOR.MINOR.PATCH", releasesFile, name, version)
+		}
+		if ext := findExtension(&idx, name); ext != nil &&
+			(hasVersion(ext, version) || compareVersions(version, highestVersion(ext)) < 0) {
+			fmt.Fprintf(p.log, "%s %s: the index already has it or a newer version, skipping\n", name, version)
+			continue
+		}
+		file := packageFile(dir, name, version)
+		sum, size, err := fileDigest(file)
+		if err != nil {
+			return nil, err
+		}
+		v := s.Version
+		v.Size = size
+		v.Source = extstore.Source{Type: extstore.SourceOCI, Ref: fmt.Sprintf("%s/%s:%s", p.registry, name, version), SHA256: sum}
+		releases = append(releases, release{name: name, display: s.Display, icon: s.Icon, file: file, version: v})
 	}
 	if len(releases) == 0 {
 		return nil, nil
@@ -102,52 +185,44 @@ func (p *publisher) publish(ctx context.Context) ([]string, error) {
 	return published, nil
 }
 
-// prepare builds, packages and describes one extension version.
-func (p *publisher) prepare(ctx context.Context, src source, work string) (release, error) {
+// stage builds, packages and describes one extension version into out.
+func (p *publisher) stage(ctx context.Context, src source, out string) (stagedRelease, error) {
 	name, version := src.manifest.Name, src.manifest.Version
 	dist, err := p.builder.Build(ctx, src.dir)
 	if err != nil {
-		return release{}, fmt.Errorf("build: %w", err)
+		return stagedRelease{}, fmt.Errorf("build: %w", err)
 	}
-	file := filepath.Join(work, name+"-"+version+".zip")
+	file := packageFile(out, name, version)
 	if err := zipDir(dist, file); err != nil {
-		return release{}, fmt.Errorf("package: %w", err)
+		return stagedRelease{}, fmt.Errorf("package: %w", err)
 	}
 	meta, err := describePackage(ctx, file)
 	if err != nil {
-		return release{}, err
+		return stagedRelease{}, err
 	}
 	if meta.Manifest.Name != name || meta.Manifest.Version != version {
-		return release{}, fmt.Errorf("built package is %s %s, the source manifest says %s %s",
+		return stagedRelease{}, fmt.Errorf("built package is %s %s, the source manifest says %s %s",
 			meta.Manifest.Name, meta.Manifest.Version, name, version)
 	}
-	sum, size, err := fileDigest(file)
-	if err != nil {
-		return release{}, err
-	}
-	return release{
-		name: name,
-		meta: meta,
-		file: file,
-		version: extstore.Version{
+	return stagedRelease{
+		Name:    name,
+		Display: meta.Display,
+		Icon:    meta.Icon,
+		Version: extstore.Version{
 			Version:       version,
 			HostABI:       meta.Manifest.HostABI,
 			MinAppVersion: meta.Manifest.MinAppVersion,
 			Capabilities:  meta.Manifest.Capabilities,
-			Size:          size,
 			PublishedAt:   p.now().UTC().Truncate(time.Second),
-			Source: extstore.Source{
-				Type:   extstore.SourceOCI,
-				Ref:    fmt.Sprintf("%s/%s:%s", p.registry, name, version),
-				SHA256: sum,
-			},
 		},
 	}, nil
 }
 
+// hasVersion reports whether ext publishes version, by the same numeric order
+// check and the app use (01.0.0 is 1.0.0).
 func hasVersion(ext *extstore.Extension, version string) bool {
 	for _, v := range ext.Versions {
-		if v.Version == version {
+		if compareVersions(v.Version, version) == 0 {
 			return true
 		}
 	}
@@ -163,8 +238,8 @@ func addRelease(idx *extstore.Index, r release) {
 		idx.Extensions = append(idx.Extensions, extstore.Extension{Name: r.name})
 		ext = &idx.Extensions[len(idx.Extensions)-1]
 	}
-	ext.Display = r.meta.Display
-	ext.Icon = r.meta.Icon
+	ext.Display = r.display
+	ext.Icon = r.icon
 	ext.Versions = append(ext.Versions, r.version)
 }
 

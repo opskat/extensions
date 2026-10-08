@@ -64,22 +64,25 @@ the store.
    fails the pull request if the version is below the highest version
    `index.json` already publishes for that extension; run `make index-check` to
    see the same result locally.
-2. **Merge.** On the push to `main`, the `publish` job runs `make publish`. For
-   every extension whose manifest version is not in `index.json` yet it builds
-   `dist/` with `make build`, zips it with `manifest.json` at the zip root,
-   loads the zip through OpsKat's own extension loader to read the display name,
-   description, icon, capabilities, `hostABI` and `minAppVersion` the app will
-   show, pushes it as a single-layer OCI artifact to
-   `ghcr.io/opskat/extensions/<name>:<version>`, and records its sha256 and size.
-   It then signs `index.json` and commits `index.json` and `index.json.sig` to
-   `main`. That commit carries `[skip ci]`, so it does not publish again.
+2. **Merge.** On the push to `main`, the `package` job (`publish prepare`, no
+   secrets) builds `dist/` with `make build` for every extension whose manifest
+   version is not in `index.json` yet, zips it with `manifest.json` at the zip
+   root, and loads the zip through OpsKat's own extension loader to read the
+   display name, description, icon, capabilities, `hostABI` and `minAppVersion`
+   the app will show. The `publish` job (`publish release`), which runs no
+   extension build code, then pushes each zip as a single-layer OCI artifact to
+   `ghcr.io/opskat/extensions/<name>:<version>`, records its sha256 and size,
+   signs `index.json` and commits `index.json` and `index.json.sig` to `main`.
+   That commit carries `[skip ci]`, so it does not publish again.
 
 A version already in `index.json` is never rebuilt or overwritten: to ship a
 change, bump the version. If any step fails, the job fails and nothing is
 committed, so every version in `index.json` is in the registry.
 
 The tool is `tools/publish`, its own Go module (`go -C tools/publish run . -h`):
-`check` (the pull-request gate), `publish` and `keygen`. `make ci` runs its tests.
+`check` (the pull-request gate), `prepare` and `release` (the two CI halves),
+`publish` (both, on one machine — `make publish`) and `keygen`. `make ci` runs its
+tests.
 
 ### Maintainer setup
 

@@ -63,6 +63,7 @@ index-check:
 
 # Builds, pushes and indexes every extension whose manifest version is not in
 # index.json yet. Needs EXTENSION_INDEX_SIGNING_KEY and an `oras login` to the
-# registry; CI runs it on every push to main.
+# registry. CI runs its two halves (`prepare`, `release`) as separate jobs on
+# every push to main.
 publish:
 	$(PUBLISH) publish -root $(CURDIR)

@@ -53,33 +53,21 @@ jobs:
         run: make index-check
 
   # Every push to main publishes the extensions whose manifest version is not in
-  # index.json yet: build, push to ghcr.io/opskat/extensions/<name>:<version>,
-  # append to index.json, sign, and commit index.json + index.json.sig back.
-  #
-  # The index commit does not publish again: its message carries [skip ci], which
-  # GitHub honours for push events (and a push made with GITHUB_TOKEN starts no
-  # workflow run in the first place).
-  publish:
+  # index.json yet, in two jobs. `package` builds them from the commit whose CI
+  # passed, with no secrets and a read-only token: extension builds run
+  # third-party build tooling (pnpm packages, vite plugins), which must never
+  # share a machine with the signing key or a write token. `publish` then pushes
+  # the packages to ghcr.io/opskat/extensions/<name>:<version>, appends them to
+  # index.json, signs it, and commits index.json + index.json.sig back. It runs
+  # no extension build code.
+  package:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: ci
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-    concurrency:
-      group: publish-extensions
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
-          # The tip of main, not the commit that triggered the run: runs are
-          # serialized (concurrency above), and a queued run must see the index
-          # the previous one committed, or it would rebuild and re-push versions
-          # that are already published.
-          ref: main
-          # Full history, so the index commit can be rebased onto a main that
-          # moved on while this job ran.
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -98,16 +86,63 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: extensions/*/frontend/pnpm-lock.yaml
 
+      - name: Build new versions
+        run: go -C tools/publish run . prepare -root "$GITHUB_WORKSPACE" -out "$RUNNER_TEMP/packages"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages
+          if-no-files-found: error
+          retention-days: 1
+
+  # The index commit does not publish again: its message carries [skip ci], which
+  # GitHub honours for push events (and a push made with GITHUB_TOKEN starts no
+  # workflow run in the first place).
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    concurrency:
+      group: publish-extensions
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tip of main, for its index.json: runs are serialized (concurrency
+          # above), and a queued run must see the index the previous one
+          # committed. Versions the index already has, or has a newer version
+          # of, are skipped. The packages themselves come from the package job.
+          ref: main
+          # Full history, so the index commit can be rebased onto a main that
+          # moved on while this job ran.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+
       - name: Set up oras
         uses: oras-project/setup-oras@v1
 
-      - name: Log in to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages
 
-      - name: Publish new versions
+      - name: Log in to ghcr.io
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | oras login ghcr.io --username "$GHCR_USER" --password-stdin
+
+      - name: Push and index new versions
         env:
           EXTENSION_INDEX_SIGNING_KEY: ${{ secrets.EXTENSION_INDEX_SIGNING_KEY }}
-        run: make publish
+        run: go -C tools/publish run . release -root "$GITHUB_WORKSPACE" -in "$RUNNER_TEMP/packages"
 
       - name: Commit the index
         run: |

@@ -2,15 +2,20 @@
 // extension store.
 //
 //	publish check   [-root DIR]                       pull-request gate, no key needed
-//	publish publish [-root DIR] [-registry R] [-oras BIN]
+//	publish prepare [-root DIR] -out DIR              build and describe, no key needed
+//	publish release [-root DIR] -in DIR [-registry R] [-oras BIN]
+//	publish publish [-root DIR] [-registry R] [-oras BIN]   prepare + release
 //	publish keygen                                    new index signing key pair
 //
 // check fails when an extension's manifest version is below the highest version
-// index.json already publishes for it. publish builds every extension whose
-// manifest version is not in index.json yet, pushes each package to
+// index.json already publishes for it. prepare builds every extension whose
+// manifest version is not in index.json yet and stages its package and index
+// metadata in the -out directory. release pushes each staged package to
 // <registry>/<name>:<version>, appends the versions to index.json and signs it
-// into index.json.sig with the key in $EXTENSION_INDEX_SIGNING_KEY. Any failure
-// exits non-zero with index.json untouched.
+// into index.json.sig with the key in $EXTENSION_INDEX_SIGNING_KEY. CI runs
+// prepare and release in separate jobs, so the extension builds never run where
+// the signing key is; publish does both, for a maintainer. Any failure exits
+// non-zero with index.json untouched.
 //
 // Index metadata (display strings, icon, capabilities, hostABI, minAppVersion) is
 // read by loading each package through OpsKat's own extension loader, so the
@@ -31,6 +36,8 @@ import (
 
 const usage = `usage:
   publish check   [-root DIR]
+  publish prepare [-root DIR] -out DIR
+  publish release [-root DIR] -in DIR [-registry REGISTRY] [-oras BIN]
   publish publish [-root DIR] [-registry REGISTRY] [-oras BIN]
   publish keygen
 `
@@ -64,15 +71,39 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stdout, "extension versions ok")
 		return 0
 
-	case "publish":
+	case "prepare":
+		out := flags.String("out", "", "directory to stage the packages and releases.json in")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if *out == "" {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
+		p := &publisher{root: *root, builder: makeBuilder{log: stderr}, now: time.Now, log: stderr}
+		if err := p.prepare(ctx, *out); err != nil {
+			fmt.Fprintf(stderr, "prepare failed: %v\n", err)
+			return 1
+		}
+		return 0
+
+	case "release", "publish":
+		in := ""
+		if args[0] == "release" {
+			flags.StringVar(&in, "in", "", "directory prepare staged the packages in")
+		}
 		registry := flags.String("registry", defaultRegistry, "registry repository prefix packages are pushed under")
 		oras := flags.String("oras", "oras", "oras CLI used to push packages")
 		if err := flags.Parse(args[1:]); err != nil {
 			return 2
 		}
+		if args[0] == "release" && in == "" {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
 		key, err := parseSigningKey(getenv(signingKeyEnv))
 		if err != nil {
-			fmt.Fprintf(stderr, "publish failed: %v\n", err)
+			fmt.Fprintf(stderr, "%s failed: %v\n", args[0], err)
 			return 1
 		}
 		p := &publisher{
@@ -84,9 +115,14 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 			now:      time.Now,
 			log:      stderr,
 		}
-		published, err := p.publish(ctx)
+		var published []string
+		if args[0] == "release" {
+			published, err = p.release(ctx, in)
+		} else {
+			published, err = p.publish(ctx)
+		}
 		if err != nil {
-			fmt.Fprintf(stderr, "publish failed: %v\n", err)
+			fmt.Fprintf(stderr, "%s failed: %v\n", args[0], err)
 			return 1
 		}
 		if len(published) == 0 {
