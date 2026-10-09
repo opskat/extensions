@@ -1,0 +1,47 @@
+{
+  "format": 1,
+  "extensions": [
+    {
+      "name": "elasticsearch",
+      "display": {
+        "en": {
+          "name": "Elasticsearch",
+          "description": "Browse and query Elasticsearch clusters, with the same approval rules as every other asset"
+        },
+        "zh-CN": {
+          "name": "Elasticsearch",
+          "description": "浏览、查询 Elasticsearch 集群，与其他资产共用同一套审批规则"
+        }
+      },
+      "icon": "elasticsearch",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "hostABI": "2.2",
+          "minAppVersion": "1.14.1",
+          "capabilities": {
+            "fs": {
+              "read": null,
+              "write": null
+            },
+            "http": {
+              "allowlist": null
+            },
+            "credentials": "",
+            "tunnel": false,
+            "network": {
+              "assetEndpoint": true
+            }
+          },
+          "size": 3088214,
+          "publishedAt": "2026-10-09T05:48:44Z",
+          "source": {
+            "type": "oci",
+            "ref": "ghcr.io/opskat/extensions/elasticsearch:0.1.0",
+            "sha256": "43d3c9a3284895b0cd4d3f01d6f39bc6d05d3114a666392a62eed531ab154274"
+          }
+        }
+      ]
+    }
+  ]
+}
