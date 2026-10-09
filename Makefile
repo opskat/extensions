@@ -1,6 +1,9 @@
 EXT ?=
 
-.PHONY: build test clean ci
+# The release tool (tools/publish) is its own Go module; see README "Releases".
+PUBLISH := go -C tools/publish run .
+
+.PHONY: build test clean ci index-check publish
 
 build:
 ifndef EXT
@@ -48,4 +51,19 @@ ci:
 	    fi; \
 	  fi; \
 	done; \
+	echo "=== CI for tools/publish ==="; \
+	cd tools/publish && go test ./...; \
+	cd - > /dev/null; \
 	echo "=== All checks passed ==="
+
+# Fails when an extension's manifest version is below the highest version
+# index.json already publishes for it. Needs no signing key.
+index-check:
+	$(PUBLISH) check -root $(CURDIR)
+
+# Builds, pushes and indexes every extension whose manifest version is not in
+# index.json yet. Needs EXTENSION_INDEX_SIGNING_KEY and an `oras login` to the
+# registry. CI runs its two halves (`prepare`, `release`) as separate jobs on
+# every push to main.
+publish:
+	$(PUBLISH) publish -root $(CURDIR)

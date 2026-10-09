@@ -19,7 +19,7 @@ func main() {}
 
 func init() {
 	opskat.Extension(opskat.Meta{
-		Icon:        "search",
+		Icon:        "elasticsearch",
 		DisplayName: "extension.displayName",
 		Description: "extension.description",
 		PolicyType:  "elasticsearch",

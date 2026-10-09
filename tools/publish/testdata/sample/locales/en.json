@@ -1,0 +1,6 @@
+{
+  "assetType.sample.name": "Sample server",
+  "extension.displayName": "Sample",
+  "extension.description": "Extension the publisher tests package",
+  "tools.ping.description": "Echo a message"
+}
