@@ -2,12 +2,8 @@ module github.com/opskat/extensions/tools/publish
 
 go 1.26.0
 
-// Development only: points at the opskat checkout that carries pkg/extstore.
-// Pin to the released opskat version (and drop this line) once it is merged.
-replace github.com/opskat/opskat => /Users/codfrm/Code/opskat/opskat/.dev-kit/worktrees/2026-10-04-ext-store
-
 require (
-	github.com/opskat/opskat v0.0.0-00010101000000-000000000000
+	github.com/opskat/opskat v1.14.1-0.20261009033320-859f2b3c36ae
 	go.uber.org/zap v1.28.0
 )
 
