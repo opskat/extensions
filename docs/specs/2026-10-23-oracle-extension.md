@@ -2,7 +2,7 @@
 
 > Status: Approved
 > Owner: OpsKat 维护者
-> Last updated: 2026-10-23（修订：服务名改为驱动专属字段、发布工具升级、minAppVersion）
+> Last updated: 2026-10-23（修订：服务名改为驱动专属字段、发布工具升级、minAppVersion；建表不含主键与注释）
 
 **Objective:** 发布官方扩展 `oracle`，在 OpsKat 内置的「SQL 数据库」资产下提供 Oracle 驱动：用口令或 Kerberos、经直连 / SSH 隧道 / 代理连接 Oracle 19c 及以上（含 TCPS 与监听器重定向），在查询面板与 AI / opsctl 里执行 Oracle SQL 与 PL/SQL，并像内置驱动一样浏览、查看、编辑表与对象、建改删表、导入导出。
 
@@ -99,7 +99,7 @@ issue #329（Oracle 数据库支持）三步路线的第三步，也是最后一
 - **查看：** 首屏给出列、主键、总行数与第一页；筛选、排序、翻页按宿主的表数据界面工作。
 - **值的显示：** NUMBER / FLOAT 按数据库里的精确值；DATE 显示为 `YYYY-MM-DD HH:MM:SS`；TIMESTAMP 带小数秒（按列的精度）；TIMESTAMP WITH (LOCAL) TIME ZONE 带时区；INTERVAL 按 Oracle 的文本形式；CHAR 不去掉补齐的空格（照数据库原值）；VARCHAR2 / NVARCHAR2 / CLOB / NCLOB / LONG 为文本；BLOB / RAW / LONG RAW 为二进制；XMLType 序列化为文本（表数据界面；查询面板里直接选 XMLType 列时，19c 上读回 NULL 是 go-ora 的已知限制，扩展说明里提示改用 `XMLSERIALIZE`）；23ai 的 BOOLEAN 显示 true / false，JSON、VECTOR 显示为文本；NULL 显示为 NULL。
 - **表格编辑：** 新增、修改、删除行，提交前预览生成的语句并确认（宿主现有流程）。有主键的表按主键定位；没有主键的表按 ROWID 定位，不显示「无主键」提示。值按列类型写回（DATE / TIMESTAMP 用对应的字面量或转换，二进制按十六进制）。视图不可编辑。
-- **建表：** 宿主建表对话框里的列、类型、可空、默认值、主键、注释生成 Oracle 的 `CREATE TABLE` 与 `COMMENT ON` 语句。
+- **建表：** 宿主建表对话框给出的表名与各列的名字、类型、可空、默认值生成 Oracle 的 `CREATE TABLE`。[已核实] 宿主的建表对话框与请求里没有主键与注释（opskat `pkg/dbdriver/session.go:343-358`），表注释、列注释可建表后用「改表」设置。
 - **改表：** 改表名、列改名、新增 / 删除列，以及改列类型、可空、默认值、列注释、表注释。
 - **删表、清空表：** `DROP TABLE`（是否进回收站按数据库的回收站设置）与 `TRUNCATE TABLE`，执行前宿主照旧确认。
 - **导入：** 宿主支持的导入格式按列类型写入；导入失败的行报 Oracle 错误。不提供「忽略外键」。
