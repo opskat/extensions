@@ -2,11 +2,11 @@
 
 > Status: Approved
 > Owner: OpsKat 维护者
-> Last updated: 2026-10-23
+> Last updated: 2026-10-23（修订：服务名改为驱动专属字段、发布工具升级、minAppVersion）
 
 **Objective:** 发布官方扩展 `oracle`，在 OpsKat 内置的「SQL 数据库」资产下提供 Oracle 驱动：用口令或 Kerberos、经直连 / SSH 隧道 / 代理连接 Oracle 19c 及以上（含 TCPS 与监听器重定向），在查询面板与 AI / opsctl 里执行 Oracle SQL 与 PL/SQL，并像内置驱动一样浏览、查看、编辑表与对象、建改删表、导入导出。
 
-**Hard invariant:** 只改 extensions 仓库，不改 opskat 宿主；仓库里已有的扩展与发布流程不变；扩展只经宿主给的途径联网，不接触资产口令以外不属于它的凭据（Kerberos 只拿票据）。
+**Hard invariant:** 只改 extensions 仓库，不改 opskat 宿主；仓库里已有的扩展与发布流程不变（**[用户决定]** 发布工具 `tools/publish` 只升级其依赖的宿主版本，使它认得 ABI 2.5 的契约声明；Elasticsearch 的索引条目不变）；扩展只经宿主给的途径联网，不接触资产口令以外不属于它的凭据（Kerberos 只拿票据）。
 
 ## 所处位置
 
@@ -38,10 +38,11 @@ issue #329（Oracle 数据库支持）三步路线的第三步，也是最后一
 | 3 | **[用户决定]** 只支持 Oracle 19c 及以上；登录后发现低于 19 即拒绝并说明 | 用户选定；19c 起的语法（`OFFSET … FETCH`、128 字节标识符、`ORACLE_MAINTAINED`）可统一使用，行为可预期。Rejected: 11.2 起全部——11g 要另一套分页与元数据写法；允许低版本尽力而为——会半工作 |
 | 4 | **[用户决定]** 资产树第一层就是 schema：资产 → schema → 表 / 视图 / … | 用户选定；一个资产只连一个服务，再加一层永远只有一个节点。Rejected: 服务 → schema → 表——多点一下；只显示登录用户的 schema——看不到被授权的其他 schema |
 | 5 | **[用户决定]** 包归入「存储过程」、物化视图归入「视图」；序列、同义词、类型本轮不在树里显示 | 用户选定；只改扩展仓库。Rejected: 先给宿主加对象分类——第三步推迟一轮；连包也不显示——包是 Oracle 最常用的代码单元 |
-| 6 | **[用户决定]** 驱动专属字段：「按 SID 连接」开关与「连接角色」（普通 / SYSDBA / SYSOPER，默认普通）；TLS 只接受 PEM（沿用宿主证书字段） | 用户选定。宿主交给驱动的是证书内容而不是文件，扩展读不到钱包文件。Rejected: 只支持服务名、不支持角色——老库与 DBA 场景用不了；读取 Oracle 钱包——扩展拿不到文件 |
+| 6 | **[用户决定]** 服务名、「按 SID 连接」开关与「连接角色」（普通 / SYSDBA / SYSOPER，默认普通）都是 Oracle 的驱动专属字段，表单不显示通用的「数据库」字段；TLS 只接受 PEM（沿用宿主证书字段） | [已核实] 宿主浏览、查询面板与 AI 执行时把资产配置的「数据库」换成树节点 / 标签页 / scope 选的库名再开会话（opskat `internal/app/query/objects.go:75-77`、`internal/ai/helper/database_helper.go:70-72`），扩展驱动按库各开会话（`internal/extreg/dbdriver.go:77`），而驱动专属字段不被替换；服务名放在「数据库」里就会在打开某个 schema 时丢失。宿主交给驱动的是证书内容而不是文件，扩展读不到钱包文件。Rejected: 「数据库」填服务名并放弃 schema 当「库」——推翻决定 4；改宿主——违反只改扩展仓库；只支持服务名、不支持角色——老库与 DBA 场景用不了 |
 | 7 | 不声明连接级只读、不提供新建数据库 | [已核实] go-ora 不支持只读事务选项，Oracle 没有会话级只读；Oracle 的「新建数据库」不是普通用户能做的操作。宿主对没有声明只读的驱动拒绝只读配置，并且不显示建库入口 |
 | 8 | 没有主键的表用 ROWID 精确定位要改 / 删的行 | Oracle 每行有稳定的 ROWID，与 PostgreSQL ctid、SQLite rowid 同理（宿主 `LocatesRowWithoutPrimaryKey`，`pkg/dbdriver/descriptor.go:39`）。Rejected: 按原值匹配——重复行时只能改到其中一行 |
-| 9 | 扩展的 `minAppVersion` 设为第一个包含宿主 ABI 2.5 的 OpsKat 发布版本 | [已核实] 最新发布 v1.14.0 不含 ABI 2.5（`origin/main` 领先 29 个提交）；合并进 extensions main 会自动发布到商店。Rejected: 按当前发布版本填——旧版宿主装上后加载失败 |
+| 9 | **[用户决定]** 扩展的 `minAppVersion` 为 1.14.1：约定下一次从 opskat main 发布的版本 1.14.1 包含宿主 ABI 2.5 | [已核实] 最新发布 v1.14.0 不含 ABI 2.5（没有任何 tag 包含 `dbb46b7a`）；Elasticsearch 已用尚未发布的 1.14.1；合并进 extensions main 会自动发布到商店，1.14.1 发布前用户装不上。Rejected: 1.15.0——用户选 1.14.1；按当前发布版本填——旧版宿主装上后加载失败 |
+| 10 | **[用户决定]** 本轮一并把 `tools/publish` 依赖的宿主升级到 `dbb46b7a` 或之后 | [已核实] 它现在依赖的宿主（`859f2b3c`）只接受 hostABI 2.0–2.2，`make index-check` 与发布会拒绝 Oracle 的契约，索引也写不出数据库驱动 / Kerberos / 重定向三项授权。Rejected: 另开 PR 先升级——本轮要等它合并才能过 CI |
 
 ## 发布与安装
 
@@ -52,9 +53,9 @@ issue #329（Oracle 数据库支持）三步路线的第三步，也是最后一
 
 ## 连接
 
-**前提：** 资产选 Oracle 驱动，填主机、端口、用户名，「数据库」填服务名。
+**前提：** 资产选 Oracle 驱动，填主机、端口、用户名与「服务名」（必填）。
 
-- **服务名 / SID：** 默认按服务名连接；打开「按 SID 连接」时把「数据库」当 SID。
+- **服务名 / SID：** 默认按服务名连接；打开「按 SID 连接」时把「服务名」字段的值当 SID。opsctl / AI 用驱动专属字段的键填这三项，未填服务名时保存失败并点名该字段。
 - **连接角色：** 普通（默认）、SYSDBA、SYSOPER。选 SYSDBA / SYSOPER 时以该角色登录，登录失败的报错原样给出。
 - **认证：** 口令；或 Kerberos（宿主的 Kerberos 字段组：主体、口令或 keytab、KDC、可选服务主体），驱动在握手中按 Oracle 报出的服务主体向宿主要票，不经手 Kerberos 凭据。Kerberos 时用户名可不填。
 - **TCPS：** 用宿主的证书字段（启用、跳过校验、服务器名、CA / 客户端证书 / 私钥，路径或粘贴，PEM）。服务器名为空时按资产主机名校验；校验失败、证书读不到时报错且不回落到不加密。钱包（`cwallet.sso` / `ewallet.p12`）需用户先用 orapki 导出成 PEM，扩展说明里写明。
@@ -80,7 +81,7 @@ issue #329（Oracle 数据库支持）三步路线的第三步，也是最后一
 
 **前提：** 资产已连上，展开资产树。
 
-- **schema 列表：** 列出拥有当前用户可见的表、视图或代码对象的 schema；Oracle 自带的系统 schema（`ORACLE_MAINTAINED = 'Y'`）不列出；登录用户自己的 schema 排第一，其余按名字排序。查询面板的「库」下拉即 schema，选中后语句里不带 schema 前缀的对象按该 schema 解析，且不影响同一资产的其他标签页。
+- **schema 列表：** 列出拥有当前用户可见的表、视图或代码对象的 schema；Oracle 自带的系统 schema（`ORACLE_MAINTAINED = 'Y'`）不列出；登录用户自己的 schema 排第一，其余按名字排序。宿主里的「库」（树节点、查询面板的「库」下拉、AI / opsctl 的 scope）即 schema：选了 schema 时，语句里不带 schema 前缀的对象按该 schema 解析，且不影响同一资产其他标签页或其他 schema 的会话；没有选时按登录用户自己的 schema 解析。
 - **表：** schema 下列出表（含分区表）；回收站里的表（`BIN$…`）不列出。
 - **视图：** 视图与物化视图。
 - **存储过程：** 独立的存储过程与包（名字标明是包）。
@@ -119,6 +120,7 @@ issue #329（Oracle 数据库支持）三步路线的第三步，也是最后一
 
 | Seam | What it verifies | Prior art |
 |---|---|---|
+| 发布工具检查（`make index-check`，CI 运行） | 含 Oracle 扩展时版本检查通过；`tools/publish` 自身的测试通过；打包出的索引条目列出数据库驱动、Kerberos、重定向三项授权，Elasticsearch 条目不变 | `tools/publish/*_test.go` |
 | 扩展单元测试（宿主的 `opskat.TestHost`，CI 运行） | 语句切分分类（引号、注释、PL/SQL 块、`/`、危险标记、切不开的位置）；末尾分号处理；版本检查的报错；生成的分页、筛选、编辑、建改删表、导入导出语句；驱动描述与契约声明 | `extensions/elasticsearch/*_test.go`；opskat `pkg/extension/testdata/fixture-dbdriver` |
 | 真库集成测试（设置环境变量指向 Oracle 时运行，CI 不跑） | 在 19c / 21c / 23ai 上：连接、执行、分页各种语句形态、浏览与源码、表数据值的显示、编辑（含无主键表）、建改删表、导入导出 | 无 |
 | 运行时验证（wrap-up 后主会话驱动） | 沙箱桌面端与 opsctl 对 docker.internal 的 19c（GBK、TCPS、Kerberos，重建临时 KDC）、21c、23ai 容器：全部要求；经 SSH 隧道与监听器重定向；12c / 11g 容器上的版本拒绝；商店 / 本地包安装确认 | opskat `e2e/scratch/2026-10-22-ext-driver-kerberos-sql-classify/` 的工具与验证环境 |
