@@ -79,9 +79,14 @@ func (dialect) TableColumns(ctx context.Context, conn *sql.Conn, database, table
 	return columns, nil
 }
 
-// FirstPageSQL is the starter query: the first page has no filter or order.
+// tableMark marks a query of the table view for the connection to resolve (see
+// values.go). The starter query for the SQL editor is not marked: it is the
+// user's text once they have it.
+const tableMark = "/*opskat:table*/"
+
+// FirstPageSQL is the first page the table view opens with: no filter or order.
 func (d dialect) FirstPageSQL(tableRef string, limit int) string {
-	return d.StarterSQL(tableRef, limit)
+	return tableMark + d.StarterSQL(tableRef, limit)
 }
 
 func (dialect) StarterSQL(tableRef string, limit int) string {
@@ -93,5 +98,5 @@ func (dialect) TablePageSQL(sel sqldb.TableSelect) string {
 	if sel.OrderBy != "" {
 		query += " ORDER BY " + sel.OrderBy
 	}
-	return fmt.Sprintf("%s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", query, sel.Offset, sel.Limit)
+	return tableMark + fmt.Sprintf("%s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", query, sel.Offset, sel.Limit)
 }

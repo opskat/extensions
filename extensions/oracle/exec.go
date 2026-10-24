@@ -33,6 +33,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if len(args) > 0 {
 		return c.queryRows(ctx, query, args)
 	}
+	if text, ok := strings.CutPrefix(query, tableMark); ok {
+		return c.queryTable(ctx, text)
+	}
 	if text, ok := strings.CutPrefix(query, countMark); ok {
 		return c.queryCount(ctx, text)
 	}
@@ -132,7 +135,14 @@ func (c *conn) query(ctx context.Context, query string, args []driver.NamedValue
 	if err != nil {
 		return nil, err
 	}
-	return &rows{inner: inner, left: -1}, nil
+	r := &rows{inner: inner, left: -1}
+	if typed, ok := inner.(driver.RowsColumnTypeDatabaseTypeName); ok {
+		r.types = make([]string, len(inner.Columns()))
+		for i := range r.types {
+			r.types[i] = typed.ColumnTypeDatabaseTypeName(i)
+		}
+	}
+	return r, nil
 }
 
 func (c *conn) exec(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -253,6 +263,11 @@ func withoutLockingClause(query string) (string, error) {
 type rows struct {
 	inner driver.Rows
 	left  int
+	// types are go-ora's type names of the columns (empty when the connection
+	// reports none) and fractions the fractional seconds of each (nil when unknown):
+	// what displayValue needs to show a value.
+	types     []string
+	fractions []int
 }
 
 func (r *rows) Columns() []string { return r.inner.Columns() }
@@ -267,6 +282,17 @@ func (r *rows) Next(dest []driver.Value) error {
 	}
 	if r.left > 0 {
 		r.left--
+	}
+	for i, v := range dest {
+		var typeName string
+		if i < len(r.types) {
+			typeName = r.types[i]
+		}
+		fraction := -1
+		if i < len(r.fractions) {
+			fraction = r.fractions[i]
+		}
+		dest[i] = displayValue(v, typeName, fraction)
 	}
 	return nil
 }

@@ -65,7 +65,7 @@ func TestOpenTable(t *testing.T) {
 			AddRow("NOTE", "CLOB", "YES", nil, nil, "0", "0", "0"))
 	mock.ExpectQuery(exact(`SELECT COUNT(*) FROM "HR"."EMP"`)).
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(2))
-	mock.ExpectQuery(exact(`SELECT * FROM "HR"."EMP" FETCH FIRST 50 ROWS ONLY`)).
+	mock.ExpectQuery(exact(tableMark + `SELECT * FROM "HR"."EMP" FETCH FIRST 50 ROWS ONLY`)).
 		WillReturnRows(sqlmock.NewRows([]string{"ID", "NAME", "NOTE"}).AddRow("1", "a", nil).AddRow("2", "b", "x"))
 
 	opened, err := session.OpenTable(context.Background(), "HR", "EMP", 50)
@@ -111,7 +111,7 @@ func TestTableColumnsTrimTheDefault(t *testing.T) {
 
 func TestTableRowsPagesWithOffsetFetch(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(exact(`SELECT * FROM "HR"."EMP" WHERE "NAME" LIKE '%a%' ORDER BY "ID" DESC OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY`)).
+	mock.ExpectQuery(exact(tableMark + `SELECT * FROM "HR"."EMP" WHERE "NAME" LIKE '%a%' ORDER BY "ID" DESC OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY`)).
 		WillReturnRows(sqlmock.NewRows([]string{"ID", "NAME"}).AddRow("41", "ann"))
 
 	rows, err := session.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
@@ -125,7 +125,7 @@ func TestTableRowsPagesWithOffsetFetch(t *testing.T) {
 
 func TestTableRowsWithoutFilterOrSort(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(exact(`SELECT * FROM "HR"."EMP" OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY`)).
+	mock.ExpectQuery(exact(tableMark + `SELECT * FROM "HR"."EMP" OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY`)).
 		WillReturnRows(sqlmock.NewRows([]string{"ID"}))
 
 	_, err := session.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{}, dbdriver.Page{Index: 0, Size: 20})
