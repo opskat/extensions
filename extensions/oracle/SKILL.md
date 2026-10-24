@@ -41,7 +41,7 @@ With no server name set, the certificate is checked against the asset's host nam
 A certificate that fails the check or cannot be read is an error; the connection is
 never made without TLS.
 
-**Known limitation:** on a database whose character set is not Unicode (such as
+**Known limitation (go-ora):** on a database whose character set is not Unicode (such as
 ZHS16GBK), a password containing non-ASCII characters cannot log in (ORA-01017).
 Use an ASCII password there; data in any language reads and writes correctly.
 
@@ -56,8 +56,10 @@ Use an ASCII password there; data in any language reads and writes correctly.
 - An empty string `''` is `NULL` in Oracle.
 - Outside an explicit transaction every statement commits on its own; a later
   `ROLLBACK` does not undo it.
-- On 19c an `XMLType` column may read as `NULL`; select it as
-  `XMLSERIALIZE(CONTENT col AS CLOB)` to see its value.
-- Selecting a 23ai `BOOLEAN` column in the query panel shows `1` / `0` (the table
-  view shows `true` / `false`).
+- On 19c an `XMLType` column may read as `NULL` (a known limitation of go-ora, the
+  Oracle client the driver uses); select it as `XMLSERIALIZE(CONTENT col AS CLOB)`
+  to see its value. The table view shows it serialized.
+- Selecting a 23ai `BOOLEAN` column in the query panel shows `1` / `0`: go-ora
+  reports a BOOLEAN as a plain NUMBER (a known limitation). The table view shows
+  `true` / `false`.
 - Oracle errors come back as they are, with their `ORA-` number.

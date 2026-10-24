@@ -45,11 +45,22 @@ func objectDDL(ctx context.Context, conn *sql.Conn, database, name string, objec
 			"AND object_type IN ("+quotedList(objectTypes)+") FETCH FIRST 1 ROW ONLY",
 		database, name).Scan(&ddl)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = conn.QueryRowContext(ctx,
-			"SELECT DBMS_METADATA.GET_DDL('"+missingType+"', n, o) AS DDL FROM (SELECT "+ownerIs+" AS o, :2 AS n FROM dual)",
-			database, name).Scan(&ddl)
+		return metadataDDL(ctx, conn, database, name, missingType)
 	}
 	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(ddl.String), nil
+}
+
+// metadataDDL asks DBMS_METADATA for the objectType object named name in the
+// schema, trimmed. For an object the user cannot see, or one that is not there,
+// the error is Oracle's ORA-31603.
+func metadataDDL(ctx context.Context, conn *sql.Conn, database, name, objectType string) (string, error) {
+	var ddl sql.NullString
+	if err := conn.QueryRowContext(ctx,
+		"SELECT DBMS_METADATA.GET_DDL('"+objectType+"', n, o) AS DDL FROM (SELECT "+ownerIs+" AS o, :2 AS n FROM dual)",
+		database, name).Scan(&ddl); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(ddl.String), nil

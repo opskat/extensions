@@ -174,7 +174,8 @@ func TestIntegrationBrowse(t *testing.T) {
 				source(dbdriver.ObjectView, "OPSKAT_BR_MV"))
 		}
 		_, err = session.ObjectSource(integrationContext(t), user, dbdriver.ObjectProcedure, "OPSKAT_BR_NONE", "")
-		assert.Error(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ORA-31603")
 
 		ddl, err := session.TableDDL(integrationContext(t), user, "OPSKAT_BR_EMP")
 		require.NoError(t, err)
@@ -225,6 +226,10 @@ func TestIntegrationBrowseWithoutPrivilege(t *testing.T) {
 		_, err = session.ObjectSource(integrationContext(t), "SYS", dbdriver.ObjectView, "DBA_USERS", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ORA-")
+		// SYS.DBMS_SYS_SQL is not granted to PUBLIC: its source is out of reach.
+		_, err = session.ObjectSource(integrationContext(t), "SYS", dbdriver.ObjectProcedure, "DBMS_SYS_SQL (package)", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ORA-31603")
 	})
 }
 

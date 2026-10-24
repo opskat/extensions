@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"strings"
 
 	"github.com/opskat/opskat/pkg/dbdriver"
@@ -166,6 +165,15 @@ var sourceTypes = map[string][]string{
 	dbdriver.ObjectTrigger:   {"TRIGGER"},
 }
 
+// metadataTypes are the DBMS_METADATA object types a unit of each browsed kind is
+// asked for when ALL_SOURCE has none of it; a name with the package marker is a
+// PACKAGE.
+var metadataTypes = map[string]string{
+	dbdriver.ObjectProcedure: "PROCEDURE",
+	dbdriver.ObjectFunction:  "FUNCTION",
+	dbdriver.ObjectTrigger:   "TRIGGER",
+}
+
 // ObjectSource gives a view's (or materialized view's) DDL, and a stored unit's
 // source as the script that creates it: CREATE OR REPLACE before the stored
 // text, a "/" line after each unit; a package has its spec and, when it has one,
@@ -174,10 +182,18 @@ func (dialect) ObjectSource(ctx context.Context, conn *sql.Conn, database, objTy
 	if objType == dbdriver.ObjectView {
 		return objectDDL(ctx, conn, database, name, []string{"VIEW"}, "VIEW")
 	}
-	return unitSource(ctx, conn, database, strings.TrimSpace(strings.TrimSuffix(name, packageMarker)), sourceTypes[objType])
+	unit, isPackage := strings.CutSuffix(name, packageMarker)
+	metadataType := metadataTypes[objType]
+	if isPackage {
+		metadataType = "PACKAGE"
+	}
+	return unitSource(ctx, conn, database, strings.TrimSpace(unit), sourceTypes[objType], metadataType)
 }
 
-func unitSource(ctx context.Context, conn *sql.Conn, database, name string, types []string) (string, error) {
+// unitSource reads the unit's source from ALL_SOURCE. A unit the user cannot see,
+// and one that is not there, have no rows: DBMS_METADATA is then asked for it as
+// a metadataType, so the error is Oracle's own (ORA-31603).
+func unitSource(ctx context.Context, conn *sql.Conn, database, name string, types []string, metadataType string) (string, error) {
 	rows, err := conn.QueryContext(ctx,
 		"SELECT type, text FROM all_source WHERE owner = "+ownerIs+" AND name = :2 "+
 			"AND type IN ("+quotedList(types)+") ORDER BY type, line", database, name)
@@ -211,7 +227,7 @@ func unitSource(ctx context.Context, conn *sql.Conn, database, name string, type
 	}
 	flush()
 	if len(units) == 0 {
-		return "", fmt.Errorf("%s %s does not exist or the current user cannot see its source", strings.ToLower(types[0]), dialect{}.TableRef(database, name))
+		return metadataDDL(ctx, conn, database, name, metadataType)
 	}
 	return strings.Join(units, "\n\n"), nil
 }

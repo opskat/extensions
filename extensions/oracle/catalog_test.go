@@ -219,15 +219,27 @@ func TestObjectSourceOfAFunctionAndATrigger(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// ALL_SOURCE has no row for a unit that is gone or out of the user's reach.
-func TestObjectSourceOfAMissingUnitIsAnError(t *testing.T) {
-	session, mock := newMockSession(t)
-	mock.ExpectQuery(sourceQueryPrefix).WithArgs("HR", "GONE").WillReturnRows(sourceRows())
+// ALL_SOURCE has no row for a unit that is gone or out of the user's reach;
+// DBMS_METADATA is then asked for it by name, so the error is Oracle's own
+// (ORA-31603), for a package by the package's type.
+func TestObjectSourceOfAMissingOrInvisibleUnitIsOraclesError(t *testing.T) {
+	for _, c := range []struct{ objType, name, unit, metadataType string }{
+		{dbdriver.ObjectProcedure, "GONE", "GONE", "PROCEDURE"},
+		{dbdriver.ObjectProcedure, "DBMS_SYS_SQL (package)", "DBMS_SYS_SQL", "PACKAGE"},
+		{dbdriver.ObjectFunction, "GONE", "GONE", "FUNCTION"},
+		{dbdriver.ObjectTrigger, "GONE", "GONE", "TRIGGER"},
+	} {
+		session, mock := newMockSession(t)
+		mock.ExpectQuery(sourceQueryPrefix).WithArgs("SYS", c.unit).WillReturnRows(sourceRows())
+		mock.ExpectQuery(`SELECT DBMS_METADATA\.GET_DDL\('`+c.metadataType+`', n, o\) AS DDL FROM \(SELECT NVL\(:1, SYS_CONTEXT\('USERENV', 'CURRENT_SCHEMA'\)\) AS o, :2 AS n FROM dual\)`).
+			WithArgs("SYS", c.unit).
+			WillReturnError(errors.New(`ORA-31603: object "` + c.unit + `" of type ` + c.metadataType + ` not found in schema "SYS"`))
 
-	_, err := session.ObjectSource(context.Background(), "HR", dbdriver.ObjectProcedure, "GONE", "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `"HR"."GONE"`)
-	require.NoError(t, mock.ExpectationsWereMet())
+		_, err := session.ObjectSource(context.Background(), "SYS", c.objType, c.name, "")
+		require.Error(t, err, c.name)
+		assert.Contains(t, err.Error(), "ORA-31603", c.name)
+		require.NoError(t, mock.ExpectationsWereMet(), c.name)
+	}
 }
 
 // A view's definition is the database's own DDL for it.
