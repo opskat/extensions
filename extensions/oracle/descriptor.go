@@ -25,7 +25,8 @@ const (
 )
 
 // descriptor describes the Oracle driver. There is no read-only connection
-// (Oracle has no read-only session and go-ora no read-only transaction) and no
+// (Oracle has no read-only session and go-ora no read-only transaction), no
+// foreign-key switch for imports (CanDisableForeignKeyChecks stays false) and no
 // "new database" (creating an Oracle database is not a user's operation).
 func descriptor() dbdriver.Descriptor {
 	return dbdriver.Descriptor{
@@ -45,7 +46,7 @@ func descriptor() dbdriver.Descriptor {
 		Capabilities: []dbdriver.Capability{
 			dbdriver.CapClassifyStatements,
 			dbdriver.CapViewDDL, dbdriver.CapViews, dbdriver.CapProcedures, dbdriver.CapFunctions, dbdriver.CapTriggers,
-			dbdriver.CapGridEdit, dbdriver.CapExportSQL, dbdriver.CapCopySQL,
+			dbdriver.CapGridEdit, dbdriver.CapImport, dbdriver.CapExportSQL, dbdriver.CapCopySQL,
 			dbdriver.CapCreateTable, dbdriver.CapDropTable, dbdriver.CapTruncateTable, dbdriver.CapAlterTable,
 		},
 		// ROWID finds the one row to change or delete in a table without a

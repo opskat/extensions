@@ -158,3 +158,15 @@ func TestDescriptorDeclaresTableDDL(t *testing.T) {
 		dbdriver.AlterColumnDefault, dbdriver.AlterColumnComment,
 	}, d.AlterTableAttributes)
 }
+
+// Import is declared because the dialect writes the statements; Oracle has no
+// foreign-key switch, so the import offers no "ignore foreign keys".
+func TestDescriptorDeclaresImport(t *testing.T) {
+	d := descriptor()
+	_, imports := any(dialect{}).(sqldb.Importer)
+	_, togglesForeignKeys := any(dialect{}).(sqldb.ForeignKeyChecks)
+	require.True(t, imports)
+	assert.Equal(t, imports, d.Supports(dbdriver.CapImport))
+	assert.False(t, togglesForeignKeys)
+	assert.False(t, d.CanDisableForeignKeyChecks)
+}
