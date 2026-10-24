@@ -97,7 +97,7 @@ issue #329（Oracle 数据库支持）三步路线的第三步，也是最后一
 **前提：** 在资产树里打开一张表。
 
 - **查看：** 首屏给出列、主键、总行数与第一页；筛选、排序、翻页按宿主的表数据界面工作。
-- **值的显示：** NUMBER / FLOAT 按数据库里的精确值；DATE 显示为 `YYYY-MM-DD HH:MM:SS`；TIMESTAMP 带小数秒（按列的精度）；TIMESTAMP WITH (LOCAL) TIME ZONE 带时区；INTERVAL 按 Oracle 的文本形式；CHAR 不去掉补齐的空格（照数据库原值）；VARCHAR2 / NVARCHAR2 / CLOB / NCLOB / LONG 为文本；BLOB / RAW / LONG RAW 为二进制；XMLType 序列化为文本（表数据界面；查询面板里直接选 XMLType 列时，19c 上读回 NULL 是 go-ora 的已知限制，扩展说明里提示改用 `XMLSERIALIZE`）；23ai 的 BOOLEAN 显示 true / false，JSON、VECTOR 显示为文本；NULL 显示为 NULL。
+- **值的显示：** NUMBER / FLOAT 按数据库里的精确值；DATE 显示为 `YYYY-MM-DD HH:MM:SS`；TIMESTAMP 带小数秒（按列的精度）；TIMESTAMP WITH (LOCAL) TIME ZONE 带时区；INTERVAL 按 Oracle 的文本形式；CHAR 不去掉补齐的空格（照数据库原值）；VARCHAR2 / NVARCHAR2 / CLOB / NCLOB / LONG 为文本；BLOB / RAW / LONG RAW 为二进制；XMLType 序列化为文本（表数据界面；查询面板里直接选 XMLType 列时，19c 上读回 NULL 是 go-ora 的已知限制，扩展说明里提示改用 `XMLSERIALIZE`）；23ai 的 BOOLEAN 显示 true / false（表数据界面；查询面板里直接选 BOOLEAN 列时显示 1 / 0 是 go-ora 的已知限制——它把 BOOLEAN 报成普通 NUMBER，扩展说明里写明）[用户决定 2026-10-24]，JSON、VECTOR 显示为文本；NULL 显示为 NULL。
 - **表格编辑：** 新增、修改、删除行，提交前预览生成的语句并确认（宿主现有流程）。有主键的表按主键定位；没有主键的表按 ROWID 定位，不显示「无主键」提示。值按列类型写回（DATE / TIMESTAMP 用对应的字面量或转换，二进制按十六进制）。视图不可编辑。
 - **建表：** 宿主建表对话框给出的表名与各列的名字、类型、可空、默认值生成 Oracle 的 `CREATE TABLE`。[已核实] 宿主的建表对话框与请求里没有主键与注释（opskat `pkg/dbdriver/session.go:343-358`），表注释、列注释可建表后用「改表」设置。
 - **改表：** 改表名、列改名、新增 / 删除列，以及改列类型、可空、默认值、列注释、表注释。
