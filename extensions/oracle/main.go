@@ -23,5 +23,5 @@ func init() {
 		DisplayName: "extension.displayName",
 		Description: "extension.description",
 	})
-	sdkdbdriver.DatabaseDriver(descriptor(), open)
+	sdkdbdriver.DatabaseDriver(descriptor(), open, sdkdbdriver.WithStatementClassifier(splitOracle))
 }

@@ -42,7 +42,7 @@ func descriptor() dbdriver.Descriptor {
 			{Tab: dbdriver.TabTLS, Fields: []dbdriver.FormField{dbdriver.FieldTLSCert}},
 			{Tab: dbdriver.TabAdvanced, Fields: []dbdriver.FormField{dbdriver.FieldQueryTimeout}},
 		},
-		Capabilities: []dbdriver.Capability{},
+		Capabilities: []dbdriver.Capability{dbdriver.CapClassifyStatements},
 		DriverFields: []dbdriver.DriverField{
 			{
 				Key: optServiceName, Type: dbdriver.FieldTypeText, Tab: dbdriver.TabConnection, Required: true,

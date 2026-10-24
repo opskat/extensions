@@ -33,6 +33,10 @@ func TestDescriptorForm(t *testing.T) {
 	assert.False(t, d.Supports(dbdriver.CapCreateDatabase))
 }
 
+func TestDescriptorClassifiesStatements(t *testing.T) {
+	assert.True(t, descriptor().Supports(dbdriver.CapClassifyStatements))
+}
+
 func TestDriverOptionsRequireServiceName(t *testing.T) {
 	_, err := descriptor().CompleteDriverOptions(map[string]any{})
 	require.Error(t, err)
