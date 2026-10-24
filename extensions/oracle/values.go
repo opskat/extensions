@@ -108,9 +108,12 @@ func displayVector[T any](elements []T, format func(T) string) string {
 // The table view reads a page with the table's columns known: the dictionary says
 // which columns hold a type go-ora cannot read (they are serialized to text in the
 // SELECT list) and the precision of each TIMESTAMP. The dialect marks the query
-// (markTable) and the connection resolves it here; the page is still
-// "SELECT * FROM <table> ..." when no column needs serializing. A query typed by a
-// user is never marked, so free SQL keeps go-ora's behaviour.
+// (tableMark) and the connection resolves it here; the page is still
+// "SELECT * FROM <table> ..." when no column needs serializing. The export's read
+// (StreamTableRows) is the one table query the shared session writes without the
+// mark, so a text that is just that — SELECT * FROM "SCHEMA"."TABLE" with at most
+// a WHERE and an ORDER BY — is read the same way (isTableRead). Any other query a
+// user types is never rewritten, so free SQL keeps go-ora's behaviour.
 //
 // SELECT * leaves out invisible columns, which have no COLUMN_ID.
 const tableColumnTypesQuery = "SELECT column_name, data_type, data_scale FROM all_tab_columns " +
@@ -137,7 +140,7 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 	if !ok {
 		return nil, fmt.Errorf("oracle: table query does not start with %q: %.40s", selectStarFrom, text)
 	}
-	schema, table, err := splitTableRef(rest)
+	schema, table, _, err := splitTableRef(rest)
 	if err != nil {
 		return nil, err
 	}
@@ -206,20 +209,32 @@ func (c *conn) tableColumns(ctx context.Context, schema, table string) ([]dictCo
 	return columns, r.Close()
 }
 
+// isTableRead reports whether the statement text is the table read the shared
+// session writes unmarked for an export: SELECT * FROM a reference TableRef wrote,
+// then nothing, a WHERE or an ORDER BY.
+func isTableRead(text string) bool {
+	rest, ok := strings.CutPrefix(text, selectStarFrom)
+	if !ok {
+		return false
+	}
+	_, _, tail, err := splitTableRef(rest)
+	return err == nil && (tail == "" || strings.HasPrefix(tail, " WHERE ") || strings.HasPrefix(tail, " ORDER BY "))
+}
+
 // splitTableRef reads the "SCHEMA"."TABLE" (or bare "TABLE") that TableRef wrote
-// from the start of s.
-func splitTableRef(s string) (schema, table string, err error) {
-	table, tail, err := readQuoted(s)
+// from the start of s, and returns what follows it.
+func splitTableRef(s string) (schema, table, tail string, err error) {
+	table, tail, err = readQuoted(s)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if rest, ok := strings.CutPrefix(tail, "."); ok {
 		schema = table
-		if table, _, err = readQuoted(rest); err != nil {
-			return "", "", err
+		if table, tail, err = readQuoted(rest); err != nil {
+			return "", "", "", err
 		}
 	}
-	return schema, table, nil
+	return schema, table, tail, nil
 }
 
 // readQuoted reads one quoted identifier ("" is a quote inside it).

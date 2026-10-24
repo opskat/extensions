@@ -181,6 +181,9 @@ func TestClassifyDanger(t *testing.T) {
 		"BEGIN\n  NULL; -- DELETE FROM t;\nEND;":                                                                          "",
 		"BEGIN\n  FOR r IN (SELECT * FROM t FOR UPDATE) LOOP NULL; END LOOP;\nEND;":                                       "",
 		"BEGIN\n  MERGE INTO t USING s ON (t.a = s.a) WHEN MATCHED THEN UPDATE SET t.b = s.b DELETE WHERE t.b = 0;\nEND;": "",
+		"BEGIN\n  FORALL i IN 1 .. 10\n    DELETE FROM t;\nEND;":                                                          dbdriver.ReasonNoWhereDelete,
+		"BEGIN\n  x := 1;\n  FORALL i IN INDICES OF ids SAVE EXCEPTIONS\n    UPDATE t SET a = 1;\nEND;":                   dbdriver.ReasonNoWhereUpdate,
+		"BEGIN\n  FORALL i IN 1 .. ids.COUNT\n    DELETE FROM t WHERE id = ids(i);\n  ids.DELETE;\nEND;":                  "",
 		"CREATE OR REPLACE PROCEDURE p AS\nBEGIN\n  DELETE FROM t;\nEND;":                                                 "",
 		"CREATE TRIGGER trg BEFORE DELETE OR UPDATE ON t\nBEGIN\n  NULL;\nEND;":                                           "",
 	} {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -75,7 +76,8 @@ func parseTarget(t *testing.T, name, env, raw string) oracleTarget {
 }
 
 // openRequest is the request the host would send for the target's asset, opened
-// for schema ("" for the login user's own), connecting directly.
+// for schema ("" for the login user's own), connecting directly (the test's own
+// dialer stands in for the host's reach path).
 func (o oracleTarget) openRequest(schema string) dbdriver.OpenRequest {
 	return dbdriver.OpenRequest{
 		Config: &dbdriver.Config{
@@ -83,6 +85,7 @@ func (o oracleTarget) openRequest(schema string) dbdriver.OpenRequest {
 		},
 		Password:      o.password,
 		DriverOptions: map[string]any{optServiceName: o.service, optUseSID: false, optRole: roleNormal},
+		Transport:     dbdriver.Transport{Dial: (&net.Dialer{}).DialContext},
 	}
 }
 

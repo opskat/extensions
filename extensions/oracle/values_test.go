@@ -152,6 +152,51 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// Exporting a table (CSV / Excel / SQL) reads it in one unpaged query that the
+// shared session writes unmarked; it reads the columns the way the table view
+// does, so an exported XMLType is its text rather than NULL and a JSON column
+// does not fail to decode.
+func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	expectTableColumns(mock, tableColumnTypes().
+		AddRow("ID", "NUMBER", nil).
+		AddRow("DOC", "XMLTYPE", nil).
+		AddRow("TS", "TIMESTAMP(3)", "3").
+		AddRow("CFG", "JSON", nil))
+	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) AS "DOC", "TS", ` +
+		`JSON_SERIALIZE("CFG" RETURNING CLOB) AS "CFG" FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC`).
+		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
+			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
+			sqlmock.NewColumn("DOC").OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
+			sqlmock.NewColumn("CFG").OfType("OCIClobLocator", ""),
+		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`))
+
+	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
+		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "1"}},
+		Sorts:   []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	assert.Equal(t, []string{"ID", "DOC", "TS", "CFG"}, stream.Columns())
+	require.True(t, stream.Next(), "stream error: %v", stream.Err())
+	assert.Equal(t, []any{"1", "<a>1</a>", "2026-10-23 01:02:03.000", `{"k":1}`}, stream.Row())
+	assert.False(t, stream.Next())
+	require.NoError(t, stream.Err())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A text holding the table's query and another statement is not an export read:
+// it runs as the statements it holds.
+func TestTableQueryInAScriptIsNotRewritten(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	mock.ExpectExec(`SELECT * FROM ` + emp).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT 2 FROM DUAL`).WillReturnRows(sqlmock.NewRows([]string{"2"}).AddRow("2"))
+	_, err := s.Execute(context.Background(), `SELECT * FROM `+emp+`; SELECT 2 FROM DUAL`)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // A table without such a column is read as it is: SELECT *.
 func TestTableViewKeepsSelectStarWithoutSpecialColumns(t *testing.T) {
 	s, _, mock := newExecSession(t)

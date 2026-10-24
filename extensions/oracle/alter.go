@@ -64,7 +64,7 @@ func (dialect) AlterTableSQL(_ context.Context, _ *sql.Conn, change sqldb.TableC
 		name := quoteIdent(c.Name)
 		modify := "ALTER TABLE " + target + " MODIFY " + name
 		if column.IsNew() {
-			definition, err := columnDefinition(c)
+			definition, err := sqldb.ColumnDefinitionSQL(sqldb.DefinitionLiterals, quoteIdent, c)
 			if err != nil {
 				return nil, err
 			}
@@ -126,23 +126,6 @@ func (dialect) AlterTableSQL(_ context.Context, _ *sql.Conn, change sqldb.TableC
 		statements = append(statements, statement)
 	}
 	return statements, nil
-}
-
-// columnDefinition is a new column: Oracle wants DEFAULT before NOT NULL.
-func columnDefinition(c dbdriver.ColumnDefinition) (string, error) {
-	columnType := strings.TrimSpace(c.Type)
-	definition := quoteIdent(c.Name) + " " + columnType
-	if strings.TrimSpace(c.DefaultValue) != "" {
-		literal, err := sqldb.DefinitionLiterals.Default(c.DefaultValue, columnType)
-		if err != nil {
-			return "", err
-		}
-		definition += " DEFAULT " + literal
-	}
-	if !c.Nullable {
-		definition += " NOT NULL"
-	}
-	return definition, nil
 }
 
 // commentOn sets a comment; an empty one is written as ”, which Oracle stores as no comment.

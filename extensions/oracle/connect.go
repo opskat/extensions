@@ -80,9 +80,6 @@ func connectURL(req dbdriver.OpenRequest) string {
 func goOraLogin(req dbdriver.OpenRequest) (func(ctx context.Context) (driver.Conn, error), error) {
 	url := connectURL(req)
 	dial := req.Transport.Dial
-	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
-	}
 	var tlsConf *tls.Config
 	if req.TLS != nil {
 		var err error

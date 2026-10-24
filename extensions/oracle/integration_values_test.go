@@ -98,6 +98,35 @@ func TestIntegrationTableViewValues(t *testing.T) {
 	})
 }
 
+// Exporting the table streams every row with the values the table view shows:
+// XMLType (and on 23ai JSON) as its text.
+func TestIntegrationTableExportValues(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, table, schema := valuesTable(t, target)
+		stream, err := s.StreamTableRows(integrationContext(t), schema, table, dbdriver.TableQuery{
+			Sorts: []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stream.Close() })
+		var rows []map[string]any
+		for stream.Next() {
+			row := map[string]any{}
+			for i, name := range stream.Columns() {
+				row[name] = stream.Row()[i]
+			}
+			rows = append(rows, row)
+		}
+		require.NoError(t, stream.Err())
+		require.Len(t, rows, 2)
+		assert.Contains(t, rows[0]["XML"], "<b>1</b>", "XMLType is serialized")
+		assert.Equal(t, "2026-10-23 01:02:03.100", rows[0]["TS"])
+		if target.name == "23ai" {
+			assert.JSONEq(t, `{"k":1}`, fmt.Sprint(rows[0]["J"]))
+		}
+		assert.Nil(t, rows[1]["XML"])
+	})
+}
+
 // A TIMESTAMP(3) without a fraction still shows its three digits.
 func TestIntegrationTableViewShowsColumnPrecision(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {

@@ -348,13 +348,27 @@ func hasWhere(toks []token, depth int) bool {
 	return false
 }
 
+// blockBoundaries are the tokens after which a statement of a block starts (">"
+// closes a <<label>>).
+var blockBoundaries = map[string]bool{";": true, "BEGIN": true, "THEN": true, "ELSE": true, "LOOP": true, ">": true}
+
+// startsBlockStatement reports whether toks[i] starts a statement of a block: it
+// follows a boundary, or it is the DML of a FORALL that does.
+func startsBlockStatement(toks []token, i int) bool {
+	for k := i - 1; k >= 0; k-- {
+		if blockBoundaries[toks[k].text] {
+			return k == i-1 || toks[k+1].text == "FORALL"
+		}
+	}
+	return false
+}
+
 // blockDanger returns the danger reason of an anonymous block that runs an
 // UPDATE or DELETE without WHERE as one of its statements, else "".
 func blockDanger(toks []token) string {
-	stmtStart := map[string]bool{";": true, "BEGIN": true, "THEN": true, "ELSE": true, "LOOP": true, ">": true}
 	for i := 1; i < len(toks); i++ {
 		t := toks[i]
-		if (t.text != "UPDATE" && t.text != "DELETE") || !stmtStart[toks[i-1].text] || i+1 >= len(toks) {
+		if (t.text != "UPDATE" && t.text != "DELETE") || i+1 >= len(toks) || !startsBlockStatement(toks, i) {
 			continue
 		}
 		// MERGE's own clauses: "UPDATE SET …" and "DELETE [WHERE …]" name no table.

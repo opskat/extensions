@@ -24,6 +24,9 @@ import (
 // and the last is run the way the session asked, so a query's result is the last
 // statement's.
 //
+// A table's own reads (the table view's pages, an export) are resolved with the
+// table's columns known (values.go).
+//
 // The query panel's paging is done here too: the dialect only marks the text
 // (markCount / markPage), and the connection counts it, or runs it as written and
 // stops reading at the end of the requested page. Wrapping it in a subquery
@@ -45,6 +48,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	stmts, err := splitScript(ctx, query)
 	if err != nil {
 		return nil, err
+	}
+	if len(stmts) == 1 && isTableRead(stmts[0].Text) {
+		return c.queryTable(ctx, stmts[0].Text)
 	}
 	last := len(stmts) - 1
 	for i := range last {

@@ -82,7 +82,7 @@ func (dialect) InsertRowSQL(tableRef, columns, values string, _ bool) string {
 // table's first column that takes a value (not hidden or virtual; an identity
 // column only when there is no other) and gives it DEFAULT.
 func defaultRowInsert(tableRef string) string {
-	schema, table, err := splitTableRef(tableRef)
+	schema, table, _, err := splitTableRef(tableRef)
 	if err != nil {
 		panic(fmt.Sprintf("oracle: %q is not a reference TableRef wrote: %v", tableRef, err))
 	}
