@@ -56,12 +56,23 @@ func (dialect) EqualitySQL(columnType, column, literal string) string {
 // written, and a DATE / TIMESTAMP / TIMESTAMP WITH TIME ZONE ("2006-01-02
 // 15:04:05", the fraction, " +08:00") by the session's NLS_DATE_FORMAT /
 // NLS_TIMESTAMP_FORMAT / NLS_TIMESTAMP_TZ_FORMAT, which must spell that layout.
+// A TIMESTAMP WITH (LOCAL) TIME ZONE is the exception: a local one takes no zone in
+// a plain string (ORA-01830) and a negative offset without a fraction reads as
+// positive under "SS.FF" (the sign taken for the dot), so their text goes through
+// TO_TIMESTAMP_TZ, whose "SSXFF" reads the offset either way.
 var literals = sqldb.Literals{
 	Binary: func(columnType string) (string, string, bool) {
 		name, _, _ := strings.Cut(columnType, "(")
 		switch strings.ToUpper(strings.TrimSpace(name)) {
 		case "RAW", "LONG RAW", "BLOB":
 			return "HEXTORAW('", "')", true
+		}
+		return "", "", false
+	},
+	Converted: func(columnType string) (string, string, bool) {
+		upper := strings.ToUpper(strings.TrimSpace(columnType))
+		if strings.HasSuffix(upper, "WITH TIME ZONE") || strings.HasSuffix(upper, "WITH LOCAL TIME ZONE") {
+			return "TO_TIMESTAMP_TZ(", ", 'YYYY-MM-DD HH24:MI:SSXFF TZH:TZM')", true
 		}
 		return "", "", false
 	},

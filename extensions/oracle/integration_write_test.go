@@ -217,3 +217,96 @@ func TestIntegrationDisplayedValuesWriteBack(t *testing.T) {
 		assert.Equal(t, want, queryStrings(t, s, readBack+table+" WHERE ID = 2"))
 	})
 }
+
+// A BOOLEAN (23ai) the table view shows as true / false writes back through the
+// grid's UPDATE and INSERT and reads back as the same value.
+func TestIntegrationBooleanWriteBack(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		if target.name != "23ai" {
+			t.Skip("BOOLEAN needs Oracle 23ai")
+		}
+		s, schema, table := writeSession(t, target, "OPSKAT_WR_BOOL", "ID NUMBER(10) PRIMARY KEY, FLAG BOOLEAN")
+		ctx := integrationContext(t)
+		_, err := s.Execute(ctx, "INSERT INTO "+table+" VALUES (1, TRUE)")
+		require.NoError(t, err)
+		_, err = s.Execute(ctx, "INSERT INTO "+table+" VALUES (3, FALSE)")
+		require.NoError(t, err)
+		const readBack = "SELECT CASE WHEN FLAG THEN 'true' WHEN NOT FLAG THEN 'false' END FROM "
+
+		page, err := s.TableRows(ctx, schema, table, dbdriver.TableQuery{
+			Sorts: []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}},
+		}, dbdriver.Page{Index: 0, Size: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 2)
+		assert.Equal(t, "true", columnValues(page, 0)["FLAG"])
+		assert.Equal(t, "false", columnValues(page, 1)["FLAG"])
+		writer, err := s.PrepareRowStatements(ctx, schema, table)
+		require.NoError(t, err)
+
+		// The grid writes the shown text back: flip each row's value, then insert both.
+		flipped := []map[string]any{
+			{"ID": "1", "FLAG": "false"},
+			{"ID": "3", "FLAG": "true"},
+		}
+		updates, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+			Kind: dbdriver.RowUpdate, Columns: page.Columns, Rows: flipped, PrimaryKeys: []string{"ID"},
+		})
+		require.NoError(t, err)
+		runEach(t, s, updates)
+		assert.Equal(t, []string{"false"}, queryStrings(t, s, readBack+table+" WHERE ID = 1"))
+		assert.Equal(t, []string{"true"}, queryStrings(t, s, readBack+table+" WHERE ID = 3"))
+
+		inserts, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+			Kind: dbdriver.RowInsert, Columns: page.Columns,
+			Rows: []map[string]any{{"ID": "4", "FLAG": "true"}, {"ID": "5", "FLAG": "false"}},
+		})
+		require.NoError(t, err)
+		runEach(t, s, inserts)
+		assert.Equal(t, []string{"true"}, queryStrings(t, s, readBack+table+" WHERE ID = 4"))
+		assert.Equal(t, []string{"false"}, queryStrings(t, s, readBack+table+" WHERE ID = 5"))
+	})
+}
+
+// A TIMESTAMP WITH LOCAL TIME ZONE is shown with its offset (the instant, in UTC):
+// the grid writes that text back without ORA-01830, locating the row by the
+// original value, and the column holds the same instant afterwards.
+func TestIntegrationLocalTimeZoneWriteBack(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, schema, table := writeSession(t, target, "OPSKAT_WR_LTZ",
+			"ID NUMBER(10), L6 TIMESTAMP(6) WITH LOCAL TIME ZONE, L0 TIMESTAMP(0) WITH LOCAL TIME ZONE")
+		ctx := integrationContext(t)
+		_, err := s.Execute(ctx, "INSERT INTO "+table+" VALUES (1, TIMESTAMP '2026-10-24 10:11:12.123456 +08:00', "+
+			"TIMESTAMP '2026-10-24 10:11:12 -05:30')")
+		require.NoError(t, err)
+		const instants = "SELECT TO_CHAR(SYS_EXTRACT_UTC(L6), 'YYYY-MM-DD HH24:MI:SS.FF6'), " +
+			"TO_CHAR(SYS_EXTRACT_UTC(L0), 'YYYY-MM-DD HH24:MI:SS') FROM "
+		want := []string{"2026-10-24 02:11:12.123456", "2026-10-24 15:41:12"}
+		require.Equal(t, want, queryStrings(t, s, instants+table))
+
+		page, err := s.TableRows(ctx, schema, table, dbdriver.TableQuery{}, dbdriver.Page{Index: 0, Size: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		row := columnValues(page, 0)
+		assert.Equal(t, "2026-10-24 02:11:12.123456 +00:00", row["L6"])
+		// The table has no primary key: the row is located by its shown values, the
+		// local-time-zone ones included, and the shown values are written back.
+		statements, err := s.GridEditStatements(ctx, schema, table, dbdriver.GridEditRequest{
+			Columns: page.Columns,
+			Updates: []dbdriver.GridUpdate{{Row: row, Set: []dbdriver.ColumnValue{
+				{Column: "L6", Value: row["L6"]}, {Column: "L0", Value: row["L0"]},
+			}}},
+		})
+		require.NoError(t, err)
+		runEach(t, s, statements.Updates)
+		assert.Equal(t, want, queryStrings(t, s, instants+table))
+
+		writer, err := s.PrepareRowStatements(ctx, schema, table)
+		require.NoError(t, err)
+		inserts, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+			Kind: dbdriver.RowInsert, Columns: page.Columns, Rows: []map[string]any{row},
+		})
+		require.NoError(t, err)
+		runEach(t, s, inserts)
+		assert.Equal(t, want, queryStrings(t, s, instants+table+" FETCH FIRST 1 ROWS ONLY"))
+	})
+}

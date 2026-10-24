@@ -224,6 +224,24 @@ func TestTableViewKeepsSelectStarWithoutSpecialColumns(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The table view shows a 23ai BOOLEAN column as true / false: go-ora reports it as
+// a NUMBER (1 / 0), so the dictionary's BOOLEAN says which SELECT-list column to
+// spell out. A NUMBER column is left as it is.
+func TestTableViewShowsBooleanColumnsAsTrueAndFalse(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	expectTableColumns(mock, tableColumnTypes().
+		AddRow("FLAG", "BOOLEAN", nil).
+		AddRow("N", "NUMBER", nil))
+	mock.ExpectQuery(`SELECT CASE WHEN "FLAG" THEN 'true' WHEN NOT "FLAG" THEN 'false' END AS "FLAG", "N" FROM ` + emp +
+		` OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY`).
+		WillReturnRows(sqlmock.NewRows([]string{"FLAG", "N"}).AddRow("true", "1"))
+
+	rows, err := s.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{}, dbdriver.Page{Index: 0, Size: 20})
+	require.NoError(t, err)
+	assert.Equal(t, [][]any{{"true", "1"}}, rows.Rows)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // Opening a table reads its first page the same way.
 func TestOpenTableFirstPageIsShownLikeTheTableView(t *testing.T) {
 	s, _, mock := newExecSession(t)

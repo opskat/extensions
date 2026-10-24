@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/opskat/opskat v1.14.1-0.20261024035858-6f71334db900
+	github.com/opskat/opskat v1.14.1-0.20261024133254-8bd232b40160
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/stretchr/testify v1.12.1
 )

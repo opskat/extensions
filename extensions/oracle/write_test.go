@@ -25,7 +25,8 @@ func expectEmpColumns(mock sqlmock.Sqlmock) {
 
 // Copy / export as SQL: "SCHEMA"."TABLE" and "COLUMN" as the dictionary spells
 // them; a binary column's displayed text (its bytes) is written back as HEXTORAW of
-// those bytes; dates and the rest are string literals in their displayed form.
+// those bytes; a time zone timestamp goes through TO_TIMESTAMP_TZ; dates and the rest
+// are string literals in their displayed form.
 func TestRowStatementsWriteOracleLiterals(t *testing.T) {
 	session, mock := newMockSession(t)
 	ctx := context.Background()
@@ -44,7 +45,7 @@ func TestRowStatementsWriteOracleLiterals(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{`INSERT INTO "HR"."EMP" ("ID", "NAME", "CODE", "DATA", "BORN", "SEEN") VALUES ` +
-		`('1', 'O''Reilly', HEXTORAW('00ff41'), HEXTORAW('dead'), '2024-01-02 03:04:05', '2024-01-02 03:04:05.123456 +08:00');`,
+		`('1', 'O''Reilly', HEXTORAW('00ff41'), HEXTORAW('dead'), '2024-01-02 03:04:05', TO_TIMESTAMP_TZ('2024-01-02 03:04:05.123456 +08:00', 'YYYY-MM-DD HH24:MI:SSXFF TZH:TZM'));`,
 	}, inserts)
 
 	updates, err := writer.RowStatements(dbdriver.RowStatementsRequest{
@@ -189,4 +190,37 @@ func TestEqualitySQLByColumnType(t *testing.T) {
 	assert.Equal(t, `"A" = '1'`, d.EqualitySQL("NUMBER(10)", `"A"`, "'1'"))
 	assert.Equal(t, `"A" = '1'`, d.EqualitySQL("", `"A"`, "'1'"))
 	assert.Equal(t, `DBMS_LOB.COMPARE("A", TO_CLOB('x')) = 0`, d.EqualitySQL("clob", `"A"`, "'x'"))
+}
+
+// A TIMESTAMP WITH (LOCAL) TIME ZONE is shown with its offset, which the session's
+// timestamp format does not read for a local time zone (ORA-01830) and misreads
+// for a negative offset without a fraction ("SS.FF" takes the sign for the dot),
+// so both are converted with TO_TIMESTAMP_TZ ("SSXFF" reads either); NULL stays
+// NULL and a plain TIMESTAMP stays a string literal.
+func TestRowStatementsConvertTimeZoneTimestamps(t *testing.T) {
+	session, mock := newMockSession(t)
+	mock.ExpectQuery(`FROM all_tab_columns c`).WithArgs("HR", "EMP").
+		WillReturnRows(columnRows().
+			AddRow("ID", "NUMBER(10)", "NO", nil, nil, "0", "0", "0").
+			AddRow("LTZ", "TIMESTAMP(6) WITH LOCAL TIME ZONE", "YES", nil, nil, "0", "0", "0").
+			AddRow("LTZ0", "TIMESTAMP(0) WITH LOCAL TIME ZONE", "YES", nil, nil, "0", "0", "0").
+			AddRow("SEEN", "TIMESTAMP(0) WITH TIME ZONE", "YES", nil, nil, "0", "0", "0").
+			AddRow("TS", "TIMESTAMP(6)", "YES", nil, nil, "0", "0", "0"))
+	writer, err := session.PrepareRowStatements(context.Background(), "HR", "EMP")
+	require.NoError(t, err)
+
+	inserts, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+		Kind:    dbdriver.RowInsert,
+		Columns: []string{"ID", "LTZ", "LTZ0", "SEEN", "TS"},
+		Rows: []map[string]any{{
+			"ID": float64(1), "LTZ": "2026-10-24 10:11:12 -05:30", "LTZ0": nil,
+			"SEEN": "2026-10-24 10:11:12 -05:30", "TS": "2026-10-24 10:11:12.5",
+		}},
+	})
+	require.NoError(t, err)
+	const tz = `, 'YYYY-MM-DD HH24:MI:SSXFF TZH:TZM')`
+	assert.Equal(t, []string{`INSERT INTO "HR"."EMP" ("ID", "LTZ", "LTZ0", "SEEN", "TS") VALUES ` +
+		`('1', TO_TIMESTAMP_TZ('2026-10-24 10:11:12 -05:30'` + tz + `, NULL, ` +
+		`TO_TIMESTAMP_TZ('2026-10-24 10:11:12 -05:30'` + tz + `, '2026-10-24 10:11:12.5');`}, inserts)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

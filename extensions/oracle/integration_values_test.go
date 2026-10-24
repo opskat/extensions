@@ -48,7 +48,9 @@ func valuesTable(t *testing.T, target oracleTarget) (*sqldb.Session, string, str
 	require.NoError(t, err)
 	_, err = s.Execute(ctx, "INSERT INTO "+table+" (ID) VALUES (2)")
 	require.NoError(t, err)
-	return s, table, target.username
+	var schema string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT USER FROM DUAL`).Scan(&schema))
+	return s, table, schema
 }
 
 func columnValues(rs *dbdriver.RowSet, row int) map[string]any {
@@ -74,7 +76,8 @@ func TestIntegrationTableViewValues(t *testing.T) {
 		assert.Equal(t, "2026-10-23 01:02:03", got["D"])
 		assert.Equal(t, "2026-10-23 01:02:03.100", got["TS"])
 		assert.Regexp(t, `^2026-10-23 01:02:03\.100 \+08:00$`, got["TSTZ"])
-		assert.Regexp(t, `^2026-10-23 \d\d:\d\d:\d\d\.123456 [+-]\d\d:\d\d$`, got["TSLTZ"])
+		// shown as the instant, in UTC: the date follows the session time zone the row was written in
+		assert.Regexp(t, `^2026-10-2[23] \d\d:\d\d:\d\d\.123456 [+-]\d\d:\d\d$`, got["TSLTZ"])
 		assert.Contains(t, got["IV"], "+01 02:03:04.5")
 		assert.Contains(t, got["IYM"], "+01-02")
 		assert.Equal(t, "ab    ", got["CH"], "CHAR keeps its padding")
@@ -122,6 +125,8 @@ func TestIntegrationTableExportValues(t *testing.T) {
 		assert.Equal(t, "2026-10-23 01:02:03.100", rows[0]["TS"])
 		if target.name == "23ai" {
 			assert.JSONEq(t, `{"k":1}`, fmt.Sprint(rows[0]["J"]))
+			assert.Equal(t, "true", rows[0]["BO"], "BOOLEAN is true / false in the table view")
+			assert.Nil(t, rows[1]["BO"])
 		}
 		assert.Nil(t, rows[1]["XML"])
 	})

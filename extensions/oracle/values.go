@@ -138,6 +138,12 @@ type dictColumn struct {
 	fraction int // fractional seconds of a TIMESTAMP, -1 otherwise
 }
 
+// booleanSelect is the SELECT-list expression that shows a 23ai BOOLEAN column
+// (dictionary DATA_TYPE BOOLEAN) as true / false: go-ora reports it as a NUMBER
+// (1 / 0), so only the table view, which knows the column's type, can tell it.
+// The write path compares the column itself (EqualitySQL), not this text.
+const booleanSelect = "CASE WHEN %[1]s THEN 'true' WHEN NOT %[1]s THEN 'false' END"
+
 func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error) {
 	rest, ok := strings.CutPrefix(text, selectStarFrom)
 	if !ok {
@@ -157,7 +163,11 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 	fractions := make(map[string]int, len(columns))
 	for _, col := range columns {
 		expr := quoteIdent(col.name)
-		if format, ok := serializers[col.dataType]; ok {
+		format, ok := serializers[col.dataType]
+		if col.dataType == "BOOLEAN" {
+			format, ok = booleanSelect, true
+		}
+		if ok {
 			expr = fmt.Sprintf(format, expr) + " AS " + quoteIdent(col.name)
 			serialized = true
 		}

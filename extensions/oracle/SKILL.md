@@ -58,4 +58,6 @@ Use an ASCII password there; data in any language reads and writes correctly.
   `ROLLBACK` does not undo it.
 - On 19c an `XMLType` column may read as `NULL`; select it as
   `XMLSERIALIZE(CONTENT col AS CLOB)` to see its value.
+- Selecting a 23ai `BOOLEAN` column in the query panel shows `1` / `0` (the table
+  view shows `true` / `false`).
 - Oracle errors come back as they are, with their `ORA-` number.
