@@ -224,7 +224,7 @@ func (c *connector) prepare(ctx context.Context, inner driver.Conn) error {
 	if c.schema == "" {
 		return nil
 	}
-	_, err = execContext(ctx, inner, "ALTER SESSION SET CURRENT_SCHEMA = "+quoteIdent(c.schema))
+	_, err = execContext(ctx, inner, "ALTER SESSION SET CURRENT_SCHEMA = "+quoteIdent(c.schema), nil)
 	return err
 }
 
@@ -275,16 +275,17 @@ func queryString(ctx context.Context, c driver.Conn, query string) (string, erro
 	}
 }
 
-func execContext(ctx context.Context, c driver.Conn, query string) (driver.Result, error) {
+func execContext(ctx context.Context, c driver.Conn, query string, args []driver.NamedValue) (driver.Result, error) {
 	e, ok := c.(driver.ExecerContext)
 	if !ok {
 		return nil, errors.New("oracle: connection cannot execute statements")
 	}
-	return e.ExecContext(ctx, query, nil)
+	return e.ExecContext(ctx, query, args)
 }
 
-// conn is the driver's connection: for now it passes everything through to the
-// go-ora connection it wraps.
+// conn is the driver's connection over the go-ora connection it wraps. Queries
+// and executions go through exec.go (statement splitting, paging, the result
+// rows); the rest passes through.
 type conn struct {
 	inner driver.Conn
 }
@@ -317,20 +318,6 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		return b.BeginTx(ctx, opts)
 	}
 	return c.Begin()
-}
-
-func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if q, ok := c.inner.(driver.QueryerContext); ok {
-		return q.QueryContext(ctx, query, args)
-	}
-	return nil, driver.ErrSkip
-}
-
-func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if e, ok := c.inner.(driver.ExecerContext); ok {
-		return e.ExecContext(ctx, query, args)
-	}
-	return nil, driver.ErrSkip
 }
 
 func (c *conn) Ping(ctx context.Context) error {

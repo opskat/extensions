@@ -1,21 +1,17 @@
 package main
 
-import "fmt"
-
 // dialect is Oracle's SQL for the shared session (pkg/dbdriver/sqldb).
 //
-// For now it is a stub: PagedSQL returns the query unchanged, so a paged query
-// returns every row. Oracle cannot page by wrapping the query in a subquery
+// Oracle cannot page the query panel's query by wrapping it in a subquery
 // (duplicate column names, FOR UPDATE and a trailing comment all break it), so
-// paging moves into the driver's connection, which stops reading at the cutoff.
+// CountSQL and PagedSQL only mark the query; the driver's connection counts it,
+// or runs it as written and stops reading at the end of the page (exec.go).
 type dialect struct{}
 
-// CountSQL counts the query's rows; an Oracle subquery takes no AS alias.
-func (dialect) CountSQL(query string) string {
-	return fmt.Sprintf("SELECT COUNT(*) FROM (%s)", query)
-}
+// CountSQL marks query for the connection to count.
+func (dialect) CountSQL(query string) string { return markCount(query) }
 
-// PagedSQL returns query unchanged (see dialect).
-func (dialect) PagedSQL(query string, _, _ int) string {
-	return query
+// PagedSQL marks query for the connection to return limit rows from offset on.
+func (dialect) PagedSQL(query string, offset, limit int) string {
+	return markPage(query, offset, limit)
 }
