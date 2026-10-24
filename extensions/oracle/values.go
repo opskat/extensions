@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	goora "github.com/sijms/go-ora/v2"
 )
 
 // How a value is shown. go-ora hands database/sql the Go value of each column;
@@ -58,7 +60,8 @@ func displayValue(v driver.Value, typeName string, fraction int) driver.Value {
 	case []float64:
 		return displayVector(x, func(f float64) string { return strconv.FormatFloat(f, 'g', -1, 64) })
 	case []byte:
-		if strings.EqualFold(typeName, "VECTOR") { // INT8 vectors come as bytes
+		// INT8 vectors come as bytes. go-ora names no VECTOR type: the name is its number.
+		if typeName == goora.VECTOR.String() {
 			return displayVector(x, func(b byte) string { return strconv.Itoa(int(int8(b))) })
 		}
 	}

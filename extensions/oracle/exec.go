@@ -247,7 +247,8 @@ func (c *conn) queryPage(ctx context.Context, text string, offset, limit int) (d
 var forUpdate = regexp.MustCompile(`(?i)\bFOR\s+UPDATE\b`)
 
 // withoutLockingClause cuts a query's top-level FOR UPDATE clause, which Oracle
-// allows only at the end of the outermost query.
+// allows only at the end of the outermost query, and the blanks and comments
+// before it: a line comment left at the end would swallow the subquery's ")".
 func withoutLockingClause(query string) (string, error) {
 	masked, err := maskLiterals(query)
 	if err != nil {
@@ -255,7 +256,7 @@ func withoutLockingClause(query string) (string, error) {
 	}
 	for _, m := range forUpdate.FindAllStringIndex(masked, -1) {
 		if strings.Count(masked[:m[0]], "(") == strings.Count(masked[:m[0]], ")") {
-			return strings.TrimRight(query[:m[0]], " \t\r\n"), nil
+			return query[:len(strings.TrimRight(masked[:m[0]], " \t\r\n"))], nil
 		}
 	}
 	return query, nil

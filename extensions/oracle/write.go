@@ -29,11 +29,17 @@ func (dialect) EmptyStringIsNull() bool { return true }
 // EqualitySQL locates a row by a column's original value. Oracle cannot compare
 // LOB columns with = (ORA-00932), so those use DBMS_LOB.COMPARE, whose second
 // argument must be of the column's type: the literal (a string, or HEXTORAW for
-// a BLOB) is converted with TO_CLOB / TO_NCLOB / TO_BLOB. Every other column,
-// and one the table does not list, compares with =.
+// a BLOB) is converted with TO_CLOB / TO_NCLOB / TO_BLOB. XMLType, JSON and
+// VECTOR cannot be compared with = either: the table view shows them serialized
+// (serializers, values.go), so that serialization is compared with the shown
+// value. Every other column, and one the table does not list, compares with =.
 func (dialect) EqualitySQL(columnType, column, literal string) string {
 	name, _, _ := strings.Cut(columnType, "(")
-	switch strings.ToUpper(strings.TrimSpace(name)) {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	if format, ok := serializers[name]; ok {
+		return "DBMS_LOB.COMPARE(" + fmt.Sprintf(format, column) + ", TO_CLOB(" + literal + ")) = 0"
+	}
+	switch name {
 	case "CLOB":
 		return "DBMS_LOB.COMPARE(" + column + ", TO_CLOB(" + literal + ")) = 0"
 	case "NCLOB":

@@ -61,9 +61,10 @@ func skipBlank(s string, i int) int {
 }
 
 // loneSlashAt reports whether the line holding byte i, from i on, is a '/' alone
-// on its line (masked has comments blanked), and where that line ends.
+// on its line (masked has comments blanked), and where that line ends. i may be
+// the end of the text (a last line of blanks).
 func loneSlashAt(masked string, i int) (end int, ok bool) {
-	if masked[i] != '/' {
+	if i >= len(masked) || masked[i] != '/' {
 		return 0, false
 	}
 	if ls := strings.LastIndexByte(masked[:i], '\n') + 1; strings.TrimSpace(masked[ls:i]) != "" {
@@ -121,9 +122,6 @@ func blockEnd(masked string, start int) (end, next int) {
 			return len(masked), len(masked)
 		}
 		ls += nl + 1
-		if ls >= len(masked) {
-			return len(masked), len(masked)
-		}
 		if e, ok := loneSlashAt(masked, skipInLine(masked, ls)); ok {
 			return ls, e
 		}
@@ -161,20 +159,22 @@ func maskLiterals(sql string) (string, error) {
 			fill(i, i+e+4, ' ')
 			i += e + 4
 		case qQuoteAt(sql, i):
-			// q'<d>…<d>' with the closing delimiter of ([{< being )]}>.
+			// q'<d>…<d>' with the closing delimiter of ([{< being )]}>; the
+			// delimiter may be a multibyte character.
 			d := i + 2 // index of the delimiter; one further for nq'
 			if sql[i] != 'q' && sql[i] != 'Q' {
 				d++
 			}
-			closing := sql[d]
-			if k := strings.IndexByte("([{<", closing); k >= 0 {
-				closing = ")]}>"[k]
+			_, size := utf8.DecodeRuneInString(sql[d:])
+			closing := sql[d : d+size]
+			if k := strings.Index("([{<", closing); k >= 0 {
+				closing = ")]}>"[k : k+1]
 			}
-			e := strings.Index(sql[d+1:], string([]byte{closing, '\''}))
+			e := strings.Index(sql[d+size:], closing+"'")
 			if e < 0 {
 				return "", cannotSplit(sql, i, "q-quoted string")
 			}
-			stop := d + 1 + e + 2
+			stop := d + size + e + len(closing) + 1
 			fill(i, stop, 'q')
 			i = stop
 		case c == '\'' || c == '"':

@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/opskat/opskat/pkg/dbdriver"
+	goora "github.com/sijms/go-ora/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,6 +47,10 @@ func TestDisplayTemporalValues(t *testing.T) {
 	}
 }
 
+// vectorType is the name go-ora reports for a VECTOR column: its type list has no
+// name for VECTOR, so it is the number.
+var vectorType = goora.VECTOR.String()
+
 func TestDisplayOtherValues(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -64,10 +69,10 @@ func TestDisplayOtherValues(t *testing.T) {
 		{"BINARY_DOUBLE -Inf", math.Inf(-1), "IBDouble", "-Inf"},
 		{"BOOLEAN true", true, "Boolean", "true"},
 		{"BOOLEAN false", false, "Boolean", "false"},
-		{"VECTOR float32", []float32{1, 2.5}, "VECTOR", "[1,2.5]"},
-		{"VECTOR float64", []float64{0.1, -3}, "VECTOR", "[0.1,-3]"},
-		{"VECTOR int8 is signed", []byte{0xff, 1}, "VECTOR", "[-1,1]"},
-		{"VECTOR empty", []float32{}, "VECTOR", "[]"},
+		{"VECTOR float32", []float32{1, 2.5}, vectorType, "[1,2.5]"},
+		{"VECTOR float64", []float64{0.1, -3}, vectorType, "[0.1,-3]"},
+		{"VECTOR int8 is signed", []byte{0xff, 1}, vectorType, "[-1,1]"},
+		{"VECTOR empty", []float32{}, vectorType, "[]"},
 		{"RAW stays its bytes", []byte{0x00, 'A', 0x7f}, "RAW", []byte{0x00, 'A', 0x7f}},
 		{"BLOB stays its bytes", []byte("blob"), "OCIBlobLocator", []byte("blob")},
 		{"NULL", nil, "RAW", nil},

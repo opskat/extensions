@@ -59,6 +59,7 @@ func TestSplitIgnoresSemicolonsAndSlashesInsideLiterals(t *testing.T) {
 		"line comment":  "SELECT 1 -- a; b\nFROM dual",
 		"block comment": "SELECT 1 /* a; b\n/\n*/ FROM dual",
 		"slash string":  "SELECT 'a\n/\nb' FROM dual",
+		"q multibyte":   "SELECT q'中a;b中' FROM dual",
 	} {
 		got := split(t, sql+";SELECT 2 FROM dual")
 		require.Len(t, got, 2, name)
@@ -95,6 +96,10 @@ func TestSplitPLSQLBlocks(t *testing.T) {
 	// a lone slash inside a block comment does not end it either
 	got = split(t, "BEGIN\n/* x\n/\n*/ NULL;\nEND;")
 	require.Len(t, got, 1)
+
+	// blanks on the last line (an editor's indentation) end the text, not the block
+	got = split(t, "BEGIN\n  NULL;\nEND;\n  \t")
+	assert.Equal(t, []string{"BEGIN\n  NULL;\nEND;"}, texts(got))
 }
 
 func TestSplitStoredProgramsAreBlocks(t *testing.T) {

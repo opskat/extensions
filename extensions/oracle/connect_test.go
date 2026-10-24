@@ -299,12 +299,9 @@ func expectVersion(mock sqlmock.Sqlmock, version string) {
 	mock.ExpectQuery(versionQuery).WillReturnRows(sqlmock.NewRows([]string{"VERSION"}).AddRow(version))
 }
 
-// dateFormats is the statement every session runs after the version check.
-const dateFormats = `ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' ` +
-	`NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM'`
-
+// expectDateFormats expects the statement every session runs after the version check.
 func expectDateFormats(mock sqlmock.Sqlmock) {
-	mock.ExpectExec(dateFormats).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(dateFormatsStatement).WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
 // A date or timestamp the grid shows ("2026-10-23 01:02:03", its fraction up to
@@ -325,7 +322,7 @@ func TestConnectReturnsDateFormatError(t *testing.T) {
 	login, mock := mockLogin(t)
 	expectVersion(mock, "19.0.0.0.0")
 	formatErr := errors.New("ORA-01821: date format not recognized")
-	mock.ExpectExec(dateFormats).WillReturnError(formatErr)
+	mock.ExpectExec(dateFormatsStatement).WillReturnError(formatErr)
 	mock.ExpectClose()
 
 	db := sql.OpenDB(&connector{login: login, schema: "HR"})

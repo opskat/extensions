@@ -160,6 +160,30 @@ func TestGridEditStatementsLocateRowsByLobComparison(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// XMLType, JSON and VECTOR cannot be compared with = either (ORA-22950 / ORA-40796):
+// the table view shows each as its serialized text (values.go), so a row is
+// located by comparing that same serialization with the shown value.
+func TestGridEditStatementsLocateRowsBySerializedText(t *testing.T) {
+	session, mock := newMockSession(t)
+	mock.ExpectQuery(`FROM all_tab_columns c`).WithArgs("HR", "DOCS").
+		WillReturnRows(columnRows().
+			AddRow("ID", "NUMBER(10)", "YES", nil, nil, "0", "0", "0").
+			AddRow("DOC", "XMLTYPE", "YES", nil, nil, "0", "0", "0").
+			AddRow("CFG", "JSON", "YES", nil, nil, "0", "0", "0").
+			AddRow("EMB", "VECTOR", "YES", nil, nil, "0", "0", "0"))
+
+	statements, err := session.GridEditStatements(context.Background(), "HR", "DOCS", dbdriver.GridEditRequest{
+		Columns: []string{"ID", "DOC", "CFG", "EMB"},
+		Deletes: []map[string]any{{"ID": "1", "DOC": "<a/>", "CFG": `{"k":1}`, "EMB": "[1,2]"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{`DELETE FROM "HR"."DOCS" WHERE ROWID = (SELECT ROWID FROM "HR"."DOCS" WHERE "ID" = '1'` +
+		` AND DBMS_LOB.COMPARE(XMLSERIALIZE(CONTENT "DOC" AS CLOB), TO_CLOB('<a/>')) = 0` +
+		` AND DBMS_LOB.COMPARE(JSON_SERIALIZE("CFG" RETURNING CLOB), TO_CLOB('{"k":1}')) = 0` +
+		` AND DBMS_LOB.COMPARE(FROM_VECTOR("EMB" RETURNING CLOB), TO_CLOB('[1,2]')) = 0 FETCH FIRST 1 ROW ONLY)`}, statements.Deletes)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestEqualitySQLByColumnType(t *testing.T) {
 	d := dialect{}
 	assert.Equal(t, `"A" = '1'`, d.EqualitySQL("NUMBER(10)", `"A"`, "'1'"))

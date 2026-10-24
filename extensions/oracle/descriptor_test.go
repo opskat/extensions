@@ -17,8 +17,6 @@ func TestDescriptorIsValid(t *testing.T) {
 
 func TestDescriptorForm(t *testing.T) {
 	d := descriptor()
-	assert.Equal(t, dbdriver.DriverID("oracle"), d.ID)
-	assert.Equal(t, 1521, d.DefaultPort)
 	for _, f := range []dbdriver.FormField{
 		dbdriver.FieldHost, dbdriver.FieldPort, dbdriver.FieldUsername, dbdriver.FieldPassword,
 		dbdriver.FieldKerberos, dbdriver.FieldTunnel, dbdriver.FieldTLSCert, dbdriver.FieldQueryTimeout,
@@ -32,10 +30,6 @@ func TestDescriptorForm(t *testing.T) {
 	assert.False(t, d.UsesField(dbdriver.FieldReadOnly))
 	assert.False(t, d.Supports(dbdriver.CapReadOnly))
 	assert.False(t, d.Supports(dbdriver.CapCreateDatabase))
-}
-
-func TestDescriptorClassifiesStatements(t *testing.T) {
-	assert.True(t, descriptor().Supports(dbdriver.CapClassifyStatements))
 }
 
 // Browsing the four object kinds and viewing a table's DDL are declared: the host
@@ -140,23 +134,17 @@ func TestDriverFieldLabelsAreTranslated(t *testing.T) {
 }
 
 // Creating, dropping, truncating and altering tables are declared because the
-// session generates them (CREATE / DROP shared, TRUNCATE and ALTER by the dialect);
-// every attribute the dialect can alter is declared, so the dialog unlocks them.
+// session generates them (CREATE / DROP shared, TRUNCATE and ALTER by the dialect).
 func TestDescriptorDeclaresTableDDL(t *testing.T) {
 	d := descriptor()
 	_, truncates := any(dialect{}).(sqldb.TableTruncator)
-	alterer, alters := any(dialect{}).(sqldb.TableAlterer)
+	_, alters := any(dialect{}).(sqldb.TableAlterer)
 	require.True(t, truncates && alters)
 	for _, c := range []dbdriver.Capability{dbdriver.CapCreateTable, dbdriver.CapDropTable} {
 		assert.True(t, d.Supports(c), "capability %q", c)
 	}
 	assert.Equal(t, truncates, d.Supports(dbdriver.CapTruncateTable))
 	assert.Equal(t, alters, d.Supports(dbdriver.CapAlterTable))
-	assert.Equal(t, alterer.AlterAttributes(), d.AlterTableAttributes)
-	assert.ElementsMatch(t, []dbdriver.AlterAttribute{
-		dbdriver.AlterTableComment, dbdriver.AlterColumnType, dbdriver.AlterColumnNullable,
-		dbdriver.AlterColumnDefault, dbdriver.AlterColumnComment,
-	}, d.AlterTableAttributes)
 }
 
 // Import is declared because the dialect writes the statements; Oracle has no

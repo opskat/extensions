@@ -252,6 +252,13 @@ func TestExecutePagedCutsTheCursor(t *testing.T) {
 			columns:   []string{"ID"},
 		},
 		{
+			name:      "FOR UPDATE after a line comment",
+			statement: "SELECT ID FROM T -- the ids\nFOR UPDATE",
+			count:     "SELECT COUNT(*) FROM (SELECT ID FROM T)",
+			page:      "SELECT ID FROM T -- the ids\nFOR UPDATE",
+			columns:   []string{"ID"},
+		},
+		{
 			name:      "trailing line comment",
 			statement: "SELECT ID FROM T -- the ids",
 			count:     "SELECT COUNT(*) FROM (SELECT ID FROM T)",
