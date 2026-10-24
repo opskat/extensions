@@ -158,20 +158,20 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 		return nil, err
 	}
 	query := text
-	var list []string
+	list := make([]string, len(columns))
+	names := make([]string, len(columns))
 	serialized := false
 	fractions := make(map[string]int, len(columns))
-	for _, col := range columns {
-		expr := quoteIdent(col.name)
+	for i, col := range columns {
+		list[i], names[i] = quoteIdent(col.name), col.name
 		format, ok := serializers[col.dataType]
 		if col.dataType == "BOOLEAN" {
 			format, ok = booleanSelect, true
 		}
 		if ok {
-			expr = fmt.Sprintf(format, expr) + " AS " + quoteIdent(col.name)
+			list[i] = fmt.Sprintf(format, list[i])
 			serialized = true
 		}
-		list = append(list, expr)
 		fractions[col.name] = col.fraction
 	}
 	if serialized {
@@ -181,8 +181,14 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 	if err != nil {
 		return nil, err
 	}
-	r.fractions = make([]int, len(r.inner.Columns()))
-	for i, name := range r.inner.Columns() {
+	if serialized {
+		// The expressions have no alias, so an ORDER BY "COL" sorts by the column
+		// rather than by the expression (a CLOB cannot be sorted, ORA-22848); the
+		// rows carry the columns' names instead of the expressions' text.
+		r.names = names
+	}
+	r.fractions = make([]int, len(r.Columns()))
+	for i, name := range r.Columns() {
 		f, ok := fractions[name]
 		if !ok {
 			f = -1

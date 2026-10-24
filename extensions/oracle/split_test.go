@@ -100,6 +100,13 @@ func TestSplitPLSQLBlocks(t *testing.T) {
 	// blanks on the last line (an editor's indentation) end the text, not the block
 	got = split(t, "BEGIN\n  NULL;\nEND;\n  \t")
 	assert.Equal(t, []string{"BEGIN\n  NULL;\nEND;"}, texts(got))
+
+	// a block may open with labels: its ';' still do not end it
+	for _, block := range []string{"<<outer>>\nBEGIN\n  NULL;\nEND;", "<<a>> <<b$1>> DECLARE n NUMBER; BEGIN n := 1; END;"} {
+		got = split(t, block+"\n/\nSELECT 1 FROM dual")
+		assert.Equal(t, []string{block, "SELECT 1 FROM dual"}, texts(got), block)
+		assert.Equal(t, "PLSQL BLOCK", got[0].Type, block)
+	}
 }
 
 func TestSplitStoredProgramsAreBlocks(t *testing.T) {
@@ -179,6 +186,7 @@ func TestClassifyDanger(t *testing.T) {
 		"DROP TABLE t":                                          "",
 		"MERGE INTO t USING s ON (t.a = s.a) WHEN MATCHED THEN UPDATE SET t.b = s.b":                                      "",
 		"BEGIN\n  DELETE FROM t;\nEND;":                                                                                   dbdriver.ReasonNoWhereDelete,
+		"<<l>>\nBEGIN\n  DELETE FROM t;\nEND;":                                                                            dbdriver.ReasonNoWhereDelete,
 		"BEGIN\n  UPDATE t SET a = 1;\nEND;":                                                                              dbdriver.ReasonNoWhereUpdate,
 		"BEGIN\n  UPDATE t SET a = 1 WHERE b = 2;\n  DELETE t WHERE b = 2;\nEND;":                                         "",
 		"BEGIN\n  IF x THEN\n    DELETE FROM t;\n  END IF;\nEND;":                                                         dbdriver.ReasonNoWhereDelete,

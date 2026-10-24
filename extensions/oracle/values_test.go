@@ -137,15 +137,15 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow(`C"FG`, "JSON", nil).
 		AddRow("EMB", "VECTOR", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) AS "DOC", "TS", ` +
-		`JSON_SERIALIZE("C""FG" RETURNING CLOB) AS "C""FG", FROM_VECTOR("EMB" RETURNING CLOB) AS "EMB" ` +
+	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
+		`JSON_SERIALIZE("C""FG" RETURNING CLOB), FROM_VECTOR("EMB" RETURNING CLOB) ` +
 		`FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
-			sqlmock.NewColumn("DOC").OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
 			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
-			sqlmock.NewColumn(`C"FG`).OfType("OCIClobLocator", ""),
-			sqlmock.NewColumn("EMB").OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`JSON_SERIALIZE("C""FG"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`FROM_VECTOR("EMB"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
 		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, "[1,2]"))
 
 	rows, err := s.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
@@ -153,6 +153,7 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		Sorts:   []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}},
 	}, dbdriver.Page{Index: 1, Size: 20})
 	require.NoError(t, err)
+	assert.Equal(t, []string{"ID", "DOC", "TS", `C"FG`, "EMB"}, rows.Columns)
 	assert.Equal(t, [][]any{{"1", "<a>1</a>", "2026-10-23 01:02:03.000", `{"k":1}`, "[1,2]"}}, rows.Rows)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -168,13 +169,13 @@ func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("DOC", "XMLTYPE", nil).
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow("CFG", "JSON", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) AS "DOC", "TS", ` +
-		`JSON_SERIALIZE("CFG" RETURNING CLOB) AS "CFG" FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC`).
+	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
+		`JSON_SERIALIZE("CFG" RETURNING CLOB) FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
-			sqlmock.NewColumn("DOC").OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
 			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
-			sqlmock.NewColumn("CFG").OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`JSON_SERIALIZE("CFG"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
 		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`))
 
 	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
@@ -232,12 +233,13 @@ func TestTableViewShowsBooleanColumnsAsTrueAndFalse(t *testing.T) {
 	expectTableColumns(mock, tableColumnTypes().
 		AddRow("FLAG", "BOOLEAN", nil).
 		AddRow("N", "NUMBER", nil))
-	mock.ExpectQuery(`SELECT CASE WHEN "FLAG" THEN 'true' WHEN NOT "FLAG" THEN 'false' END AS "FLAG", "N" FROM ` + emp +
+	mock.ExpectQuery(`SELECT CASE WHEN "FLAG" THEN 'true' WHEN NOT "FLAG" THEN 'false' END, "N" FROM ` + emp +
 		` OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY`).
-		WillReturnRows(sqlmock.NewRows([]string{"FLAG", "N"}).AddRow("true", "1"))
+		WillReturnRows(sqlmock.NewRows([]string{`CASEWHEN"FLAG"THEN'TRUE'WHENNOT"FLAG"THEN'FALSE'END`, "N"}).AddRow("true", "1"))
 
 	rows, err := s.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{}, dbdriver.Page{Index: 0, Size: 20})
 	require.NoError(t, err)
+	assert.Equal(t, []string{"FLAG", "N"}, rows.Columns)
 	assert.Equal(t, [][]any{{"true", "1"}}, rows.Rows)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -252,11 +254,12 @@ func TestOpenTableFirstPageIsShownLikeTheTableView(t *testing.T) {
 		AddRow("DOC", "XMLTYPE", "YES", nil, nil, "0", "0", "0"))
 	mock.ExpectQuery(`SELECT COUNT(*) FROM ` + emp).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow("1"))
 	expectTableColumns(mock, tableColumnTypes().AddRow("ID", "NUMBER", nil).AddRow("DOC", "XMLTYPE", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) AS "DOC" FROM ` + emp + ` FETCH FIRST 50 ROWS ONLY`).
-		WillReturnRows(sqlmock.NewRows([]string{"ID", "DOC"}).AddRow("1", "<a/>"))
+	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) FROM ` + emp + ` FETCH FIRST 50 ROWS ONLY`).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", `XMLSERIALIZE(CONTENT"DOC"ASCLOB)`}).AddRow("1", "<a/>"))
 
 	opened, err := s.OpenTable(context.Background(), "HR", "EMP", 50)
 	require.NoError(t, err)
+	assert.Equal(t, []string{"ID", "DOC"}, opened.FirstPage.Columns)
 	assert.Equal(t, [][]any{{"1", "<a/>"}}, opened.FirstPage.Rows)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -132,6 +132,56 @@ func TestIntegrationTableExportValues(t *testing.T) {
 	})
 }
 
+// Sorting the table view by a column it serializes or spells out sorts by the
+// column itself (a 23ai JSON column sorts natively, its serialized CLOB could not)
+// and the columns keep the table's names.
+func TestIntegrationTableViewSortsBySpelledOutColumns(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		if target.name != "23ai" {
+			t.Skip("JSON and BOOLEAN columns need Oracle 23ai")
+		}
+		s, table, schema := valuesTable(t, target)
+		ctx := integrationContext(t)
+		_, err := s.Execute(ctx, "UPDATE "+table+` SET J = JSON('{"k":0}'), BO = FALSE WHERE ID = 2`)
+		require.NoError(t, err)
+		for column, first := range map[string]string{"J": "2", "BO": "2"} {
+			rs, err := s.TableRows(ctx, schema, table, dbdriver.TableQuery{
+				Sorts: []dbdriver.SortItem{{Column: column, Direction: dbdriver.SortAscending}},
+			}, dbdriver.Page{Index: 0, Size: 10})
+			require.NoError(t, err, column)
+			require.Len(t, rs.Rows, 2, column)
+			assert.Equal(t, first, columnValues(rs, 0)["ID"], column)
+			assert.Contains(t, rs.Columns, column)
+		}
+	})
+}
+
+// Filtering the table view by a time zone timestamp's shown value finds its row,
+// a negative offset without a fraction included (the session's format reads its
+// sign as the offset's, connect.go).
+func TestIntegrationTableViewFiltersByShownTimeZoneValue(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, schema, table := writeSession(t, target, "OPSKAT_VAL_TZF",
+			"ID NUMBER(10), TZ0 TIMESTAMP(0) WITH TIME ZONE, TZ3 TIMESTAMP(3) WITH TIME ZONE")
+		ctx := integrationContext(t)
+		_, err := s.Execute(ctx, "INSERT INTO "+table+" VALUES (1, TIMESTAMP '2026-10-23 01:02:03 -05:30', "+
+			"TIMESTAMP '2026-10-23 01:02:03.100 -05:30')")
+		require.NoError(t, err)
+		page, err := s.TableRows(ctx, schema, table, dbdriver.TableQuery{}, dbdriver.Page{Index: 0, Size: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		shown := columnValues(page, 0)
+		require.Equal(t, "2026-10-23 01:02:03 -05:30", shown["TZ0"])
+		for _, column := range []string{"TZ0", "TZ3"} {
+			rs, err := s.TableRows(ctx, schema, table, dbdriver.TableQuery{Filters: []dbdriver.FilterItem{{
+				Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: column, Operator: dbdriver.OpEqual, Value: fmt.Sprint(shown[column]),
+			}}}, dbdriver.Page{Index: 0, Size: 10})
+			require.NoError(t, err, column)
+			assert.Len(t, rs.Rows, 1, column)
+		}
+	})
+}
+
 // A TIMESTAMP(3) without a fraction still shows its three digits.
 func TestIntegrationTableViewShowsColumnPrecision(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {

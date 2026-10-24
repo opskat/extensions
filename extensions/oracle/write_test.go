@@ -193,10 +193,9 @@ func TestEqualitySQLByColumnType(t *testing.T) {
 }
 
 // A TIMESTAMP WITH (LOCAL) TIME ZONE is shown with its offset, which the session's
-// timestamp format does not read for a local time zone (ORA-01830) and misreads
-// for a negative offset without a fraction ("SS.FF" takes the sign for the dot),
-// so both are converted with TO_TIMESTAMP_TZ ("SSXFF" reads either); NULL stays
-// NULL and a plain TIMESTAMP stays a string literal.
+// timestamp format does not read for a local time zone (ORA-01830), so both are
+// converted with TO_TIMESTAMP_TZ in the shown layout ("SSXFF" reads a fraction or
+// none); NULL stays NULL and a plain TIMESTAMP stays a string literal.
 func TestRowStatementsConvertTimeZoneTimestamps(t *testing.T) {
 	session, mock := newMockSession(t)
 	mock.ExpectQuery(`FROM all_tab_columns c`).WithArgs("HR", "EMP").

@@ -7,6 +7,7 @@ require (
 	github.com/opskat/opskat v1.14.1-0.20261024133254-8bd232b40160
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261020153306-9f2b28d4331a
 )
 
 require (

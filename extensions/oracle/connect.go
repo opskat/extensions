@@ -15,6 +15,11 @@ import (
 	"github.com/opskat/opskat/pkg/dbdriver"
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
 	goora "github.com/sijms/go-ora/v2"
+	// The guest has no system certificate store (wasip1 reads no files), so
+	// without these roots a server certificate from a public CA would verify only
+	// with the CA pasted into the asset. They are used only where the system
+	// offers none.
+	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
 // minMajorVersion is the oldest Oracle release the driver supports: 19c brings
@@ -28,10 +33,12 @@ const versionQuery = `SELECT VERSION FROM PRODUCT_COMPONENT_VERSION WHERE PRODUC
 
 // dateFormatsStatement makes the session convert text to DATE, TIMESTAMP and
 // TIMESTAMP WITH TIME ZONE in the layout the grid shows them (values.go), so a
-// shown value written back as a quoted literal (write.go) converts exactly: FF9
-// reads any fraction up to nanoseconds, and a value shown without one too.
+// shown value written back or filtered by as a quoted literal converts exactly: FF9
+// reads any fraction up to nanoseconds, and a value shown without one too. With a
+// time zone the fraction's dot is X: under "SS.FF9" the "." took the sign of a
+// negative offset when no fraction precedes it (-05:30 read as +05:30).
 const dateFormatsStatement = `ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' ` +
-	`NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM'`
+	`NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SSXFF9 TZH:TZM'`
 
 // open logs in to Oracle through the reach path the host handed over and
 // confirms the database answers. Every connection of the returned pool is one
@@ -117,11 +124,12 @@ func (a kerberosAuth) Authenticate(server, service string) ([]byte, error) {
 	return a.source.Ticket(a.ctx, dbdriver.KerberosSPN(service, server))
 }
 
-// tlsConfig builds the TCPS configuration from the asset's certificate settings.
-// go-ora overwrites ServerName with the address it dials, so the chain is
-// verified here against the configured server name, or the asset host when none
-// is configured — also after a redirect to another address. Material that cannot
-// be read is an error: the asset never falls back to an unencrypted connection.
+// tlsConfig builds the TCPS configuration from the asset's certificate settings;
+// without a CA the chain is checked against the public roots. go-ora overwrites
+// ServerName with the address it dials, so the chain is verified here against the
+// configured server name, or the asset host when none is configured — also after
+// a redirect to another address. Material that cannot be read is an error: the
+// asset never falls back to an unencrypted connection.
 func tlsConfig(m *dbdriver.TLSMaterial, assetHost string) (*tls.Config, error) {
 	conf := &tls.Config{MinVersion: tls.VersionTLS12}
 	var roots *x509.CertPool

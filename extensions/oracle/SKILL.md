@@ -37,7 +37,8 @@ orapki wallet export -wallet /path/to/wallet -dn "CN=client" -cert client.pem
 openssl pkcs12 -in /path/to/wallet/ewallet.p12 -nocerts -nodes -out client.key
 ```
 
-With no server name set, the certificate is checked against the asset's host name.
+With no server name set, the certificate is checked against the asset's host name;
+with no CA certificate set, against the public certificate authorities.
 A certificate that fails the check or cannot be read is an error; the connection is
 never made without TLS.
 

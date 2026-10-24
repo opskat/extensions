@@ -48,8 +48,9 @@ func splitOracle(_ context.Context, sql string) ([]dbdriver.Statement, error) {
 	return out, nil
 }
 
-// plsqlStart matches the statements that end at a lone '/' rather than at ';'.
-var plsqlStart = regexp.MustCompile(`(?i)^(?:(?:BEGIN|DECLARE)\b|CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:EDITIONABLE|NONEDITIONABLE)\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE)\b)`)
+// plsqlStart matches the statements that end at a lone '/' rather than at ';'. An
+// anonymous block may open with labels (<<outer>>).
+var plsqlStart = regexp.MustCompile(`(?i)^(?:(?:<<\s*[^<>\s]+\s*>>\s*)*(?:BEGIN|DECLARE)\b|CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:EDITIONABLE|NONEDITIONABLE)\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE)\b)`)
 
 func isBlank(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
 
@@ -269,11 +270,16 @@ func classify(sql, masked string, start, end int) dbdriver.Statement {
 	st := dbdriver.Statement{Start: start, End: end, Text: sql[start:end]}
 	toks := tokenize(masked[start:end])
 	first := ""
-	for _, t := range toks {
-		if t.text != "(" {
-			first = t.text
-			break
+	for i := 0; i < len(toks); i++ {
+		if toks[i].text == "(" {
+			continue
 		}
+		if n := labelLen(toks[i:]); n > 0 {
+			i += n - 1
+			continue
+		}
+		first = toks[i].text
+		break
 	}
 	switch first {
 	case "SELECT", "WITH":
@@ -302,6 +308,14 @@ func classify(sql, masked string, start, end int) dbdriver.Statement {
 	}
 	st.Dangerous = st.Reason != ""
 	return st
+}
+
+// labelLen is the number of tokens of the <<label>> that starts toks, or 0.
+func labelLen(toks []token) int {
+	if len(toks) < 5 || toks[0].text != "<" || toks[1].text != "<" || toks[3].text != ">" || toks[4].text != ">" {
+		return 0
+	}
+	return 5
 }
 
 // objectModifiers are the words that may sit between CREATE / ALTER / DROP and

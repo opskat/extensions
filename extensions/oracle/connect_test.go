@@ -166,7 +166,7 @@ func handshake(t *testing.T, client *tls.Config, server *tls.Config) error {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
@@ -174,7 +174,7 @@ func handshake(t *testing.T, client *tls.Config, server *tls.Config) error {
 		if err != nil {
 			return
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		_ = s.SetDeadline(time.Now().Add(5 * time.Second))
 		_ = tls.Server(s, server).Handshake()
 	}()
@@ -313,7 +313,7 @@ func TestConnectSetsDateFormats(t *testing.T) {
 	expectDateFormats(mock)
 
 	db := sql.OpenDB(&connector{login: login})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	require.NoError(t, db.PingContext(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -326,7 +326,7 @@ func TestConnectReturnsDateFormatError(t *testing.T) {
 	mock.ExpectClose()
 
 	db := sql.OpenDB(&connector{login: login, schema: "HR"})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	assert.ErrorIs(t, db.PingContext(context.Background()), formatErr)
 	assert.NoError(t, mock.ExpectationsWereMet(), "the connection is closed, no schema is set")
 }
@@ -338,7 +338,7 @@ func TestConnectSetsCurrentSchema(t *testing.T) {
 	mock.ExpectExec(`ALTER SESSION SET CURRENT_SCHEMA = "HR"`).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	db := sql.OpenDB(&connector{login: login, schema: "HR"})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	require.NoError(t, db.PingContext(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -350,7 +350,7 @@ func TestConnectQuotesSchema(t *testing.T) {
 	mock.ExpectExec(`ALTER SESSION SET CURRENT_SCHEMA = "my""Schema"`).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	db := sql.OpenDB(&connector{login: login, schema: `my"Schema`})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	require.NoError(t, db.PingContext(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -361,7 +361,7 @@ func TestConnectWithoutSchemaKeepsLoginSchema(t *testing.T) {
 	expectDateFormats(mock)
 
 	db := sql.OpenDB(&connector{login: login})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	require.NoError(t, db.PingContext(context.Background()))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -374,7 +374,7 @@ func TestConnectRejectsServerBelow19(t *testing.T) {
 			mock.ExpectClose()
 
 			db := sql.OpenDB(&connector{login: login, schema: "HR"})
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			err := db.PingContext(context.Background())
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), version)
@@ -390,7 +390,7 @@ func TestConnectRejectsUnreadableVersion(t *testing.T) {
 	mock.ExpectClose()
 
 	db := sql.OpenDB(&connector{login: login})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	err := db.PingContext(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"unknown"`)
@@ -400,7 +400,7 @@ func TestConnectRejectsUnreadableVersion(t *testing.T) {
 func TestConnectReturnsLoginErrorAsIs(t *testing.T) {
 	loginErr := errors.New("ORA-01017: invalid username/password; logon denied")
 	db := sql.OpenDB(&connector{login: func(context.Context) (driver.Conn, error) { return nil, loginErr }})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	err := db.PingContext(context.Background())
 	assert.ErrorIs(t, err, loginErr)
 }
@@ -414,7 +414,7 @@ func TestConnectReturnsSchemaError(t *testing.T) {
 	mock.ExpectClose()
 
 	db := sql.OpenDB(&connector{login: login, schema: "NOPE"})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	assert.ErrorIs(t, db.PingContext(context.Background()), schemaErr)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -428,7 +428,7 @@ func TestConnPassesStatementsThrough(t *testing.T) {
 	mock.ExpectExec("DELETE FROM T").WillReturnResult(sqlmock.NewResult(0, 3))
 
 	db := sql.OpenDB(&connector{login: login})
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var one string
 	require.NoError(t, db.QueryRowContext(context.Background(), "SELECT 1 FROM DUAL").Scan(&one))
 	assert.Equal(t, "1", one)

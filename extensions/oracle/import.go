@@ -19,8 +19,7 @@ var _ sqldb.Importer = dialect{}
 // "TIMESTAMP(6) WITH TIME ZONE"), by how the import converts a source value. An
 // Oracle DATE holds a time of day, so it is a date-time.
 func (dialect) ColumnCategory(columnType string) dbdriver.ColumnCategory {
-	name, _, _ := strings.Cut(columnType, "(")
-	name = strings.ToUpper(strings.TrimSpace(name))
+	name := typeName(columnType)
 	switch name {
 	case "NUMBER", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE", "INTEGER", "INT", "SMALLINT", "DECIMAL", "NUMERIC", "REAL":
 		return dbdriver.CategoryNumber

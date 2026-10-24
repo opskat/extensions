@@ -275,10 +275,19 @@ type rows struct {
 	// what displayValue needs to show a value.
 	types     []string
 	fractions []int
+	// names replace the column names the database reports (nil keeps them): the
+	// table view's unaliased SELECT-list expressions (queryTable).
+	names []string
 }
 
-func (r *rows) Columns() []string { return r.inner.Columns() }
-func (r *rows) Close() error      { return r.inner.Close() }
+func (r *rows) Columns() []string {
+	if r.names != nil {
+		return r.names
+	}
+	return r.inner.Columns()
+}
+
+func (r *rows) Close() error { return r.inner.Close() }
 
 func (r *rows) Next(dest []driver.Value) error {
 	if r.left == 0 {

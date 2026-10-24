@@ -34,8 +34,7 @@ func (dialect) EmptyStringIsNull() bool { return true }
 // (serializers, values.go), so that serialization is compared with the shown
 // value. Every other column, and one the table does not list, compares with =.
 func (dialect) EqualitySQL(columnType, column, literal string) string {
-	name, _, _ := strings.Cut(columnType, "(")
-	name = strings.ToUpper(strings.TrimSpace(name))
+	name := typeName(columnType)
 	if format, ok := serializers[name]; ok {
 		return "DBMS_LOB.COMPARE(" + fmt.Sprintf(format, column) + ", TO_CLOB(" + literal + ")) = 0"
 	}
@@ -57,13 +56,12 @@ func (dialect) EqualitySQL(columnType, column, literal string) string {
 // 15:04:05", the fraction, " +08:00") by the session's NLS_DATE_FORMAT /
 // NLS_TIMESTAMP_FORMAT / NLS_TIMESTAMP_TZ_FORMAT, which must spell that layout.
 // A TIMESTAMP WITH (LOCAL) TIME ZONE is the exception: a local one takes no zone in
-// a plain string (ORA-01830) and a negative offset without a fraction reads as
-// positive under "SS.FF" (the sign taken for the dot), so their text goes through
-// TO_TIMESTAMP_TZ, whose "SSXFF" reads the offset either way.
+// a plain string (ORA-01830), so their text goes through TO_TIMESTAMP_TZ in the
+// shown layout ("SSXFF" reads a fraction or none before the offset), which also
+// keeps a copied INSERT / UPDATE independent of the running session's format.
 var literals = sqldb.Literals{
 	Binary: func(columnType string) (string, string, bool) {
-		name, _, _ := strings.Cut(columnType, "(")
-		switch strings.ToUpper(strings.TrimSpace(name)) {
+		switch typeName(columnType) {
 		case "RAW", "LONG RAW", "BLOB":
 			return "HEXTORAW('", "')", true
 		}
@@ -76,6 +74,13 @@ var literals = sqldb.Literals{
 		}
 		return "", "", false
 	},
+}
+
+// typeName is the name of a column type as TableColumns spells it, uppercased and
+// without its precision: "RAW(16)" is RAW, "TIMESTAMP(6) WITH TIME ZONE" TIMESTAMP.
+func typeName(columnType string) string {
+	name, _, _ := strings.Cut(columnType, "(")
+	return strings.ToUpper(strings.TrimSpace(name))
 }
 
 func (dialect) Literals(context.Context, *sql.Conn) (sqldb.Literals, error) { return literals, nil }
