@@ -27,7 +27,8 @@ extensions/<name>/
   dist/           # build output, git-ignored
 ```
 
-Current extensions: [`elasticsearch`](./extensions/elasticsearch).
+Current extensions: [`elasticsearch`](./extensions/elasticsearch), [`oracle`](./extensions/oracle)
+(the Oracle Database driver of SQL database assets).
 
 ## Build and test
 

@@ -25,7 +25,7 @@ extensions/<name>/
   dist/           # 构建产物，已被 git 忽略
 ```
 
-目前的扩展：[`elasticsearch`](./extensions/elasticsearch)。
+目前的扩展：[`elasticsearch`](./extensions/elasticsearch)、[`oracle`](./extensions/oracle)（「SQL 数据库」资产的 Oracle Database 驱动）。
 
 ## 构建与测试
 

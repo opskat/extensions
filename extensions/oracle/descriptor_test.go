@@ -1,0 +1,105 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"testing"
+
+	"github.com/opskat/opskat/pkg/dbdriver"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestDescriptorIsValid(t *testing.T) {
+	require.NoError(t, descriptor().Validate())
+}
+
+func TestDescriptorForm(t *testing.T) {
+	d := descriptor()
+	assert.Equal(t, dbdriver.DriverID("oracle"), d.ID)
+	assert.Equal(t, 1521, d.DefaultPort)
+	for _, f := range []dbdriver.FormField{
+		dbdriver.FieldHost, dbdriver.FieldPort, dbdriver.FieldUsername, dbdriver.FieldPassword,
+		dbdriver.FieldKerberos, dbdriver.FieldTunnel, dbdriver.FieldTLSCert, dbdriver.FieldQueryTimeout,
+	} {
+		assert.True(t, d.UsesField(f), "form field %q", f)
+	}
+	// The host swaps Config.Database for the schema a tree node / tab / scope picks,
+	// so the service name cannot live there: the form has no database field.
+	assert.False(t, d.UsesField(dbdriver.FieldDatabase))
+	// No connection-level read-only: Oracle has no read-only session.
+	assert.False(t, d.UsesField(dbdriver.FieldReadOnly))
+	assert.False(t, d.Supports(dbdriver.CapReadOnly))
+	assert.False(t, d.Supports(dbdriver.CapCreateDatabase))
+}
+
+func TestDriverOptionsRequireServiceName(t *testing.T) {
+	_, err := descriptor().CompleteDriverOptions(map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"service_name"`)
+
+	_, err = descriptor().CompleteDriverOptions(map[string]any{"service_name": ""})
+	require.Error(t, err)
+}
+
+func TestDriverOptionsDefaults(t *testing.T) {
+	opts, err := descriptor().CompleteDriverOptions(map[string]any{"service_name": "ORCLPDB1"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"service_name": "ORCLPDB1", "use_sid": false, "role": "NORMAL"}, opts)
+}
+
+func TestDriverOptionsRole(t *testing.T) {
+	d := descriptor()
+	for _, role := range []string{"NORMAL", "SYSDBA", "SYSOPER"} {
+		assert.NoError(t, d.CheckDriverOptions(map[string]any{"role": role}), role)
+	}
+	assert.Error(t, d.CheckDriverOptions(map[string]any{"role": "SYSASM"}))
+	assert.Error(t, d.CheckDriverOptions(map[string]any{"use_sid": "yes"}))
+}
+
+// manifestContract is the part of manifest.json the host checks against what the
+// guest registers.
+type manifestContract struct {
+	Name         string `json:"name"`
+	HostABI      string `json:"hostABI"`
+	Capabilities struct {
+		DatabaseDrivers  []string `json:"databaseDrivers"`
+		DatabaseKerberos bool     `json:"databaseKerberos"`
+		Network          struct {
+			DatabaseRedirects bool `json:"databaseRedirects"`
+		} `json:"network"`
+	} `json:"capabilities"`
+}
+
+// The host refuses to load the extension when the manifest's drivers differ from
+// the registered ones, and refuses a Kerberos field group without the grant.
+func TestManifestGrantsWhatTheDriverUses(t *testing.T) {
+	data, err := os.ReadFile("manifest.json")
+	require.NoError(t, err)
+	var m manifestContract
+	require.NoError(t, json.Unmarshal(data, &m))
+
+	d := descriptor()
+	assert.Equal(t, []string{string(d.ID)}, m.Capabilities.DatabaseDrivers)
+	assert.Equal(t, d.UsesField(dbdriver.FieldKerberos), m.Capabilities.DatabaseKerberos)
+	// go-ora follows listener redirects (shared server dispatchers, SCAN / RAC
+	// local listeners) and every dial goes through the asset's route.
+	assert.True(t, m.Capabilities.Network.DatabaseRedirects)
+}
+
+// Driver field labels and descriptions are locale keys the host resolves with the
+// extension's translations; a missing key would show the raw key.
+func TestDriverFieldLabelsAreTranslated(t *testing.T) {
+	for _, file := range []string{"locales/en.json", "locales/zh-CN.json"} {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		var messages map[string]string
+		require.NoError(t, json.Unmarshal(data, &messages), file)
+		for _, f := range descriptor().DriverFields {
+			for _, key := range []string{f.Label, f.Description} {
+				require.NotEmpty(t, key, "driver field %q", f.Key)
+				assert.NotEmpty(t, messages[key], "%s: %s", file, key)
+			}
+		}
+	}
+}
