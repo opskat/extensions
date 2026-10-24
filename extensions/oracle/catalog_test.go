@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -154,7 +155,7 @@ const sourceQueryPrefix = `SELECT type, text FROM all_source WHERE owner = NVL\(
 // the "/" line that ends a PL/SQL unit in a script.
 func TestObjectSourceOfAProcedure(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PROCEDURE'\) ORDER BY type, line`).
+	mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PROCEDURE', 'PACKAGE', 'PACKAGE BODY'\) ORDER BY type, line`).
 		WithArgs("HR", "ADD_EMP").
 		WillReturnRows(sourceRows(
 			[2]string{"PROCEDURE", "PROCEDURE add_emp(p_name VARCHAR2) AS\n"},
@@ -171,7 +172,7 @@ func TestObjectSourceOfAProcedure(t *testing.T) {
 
 func TestObjectSourceOfAPackageHasSpecAndBody(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PACKAGE', 'PACKAGE BODY'\) ORDER BY type, line`).
+	mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PROCEDURE', 'PACKAGE', 'PACKAGE BODY'\) ORDER BY type, line`).
 		WithArgs("HR", "EMP_PKG").
 		WillReturnRows(sourceRows(
 			[2]string{"PACKAGE", "PACKAGE emp_pkg AS\n"},
@@ -191,7 +192,7 @@ func TestObjectSourceOfAPackageHasSpecAndBody(t *testing.T) {
 
 func TestObjectSourceOfAPackageWithoutBody(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PACKAGE', 'PACKAGE BODY'\)`).
+	mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PROCEDURE', 'PACKAGE', 'PACKAGE BODY'\)`).
 		WithArgs("HR", "CONSTS").
 		WillReturnRows(sourceRows([2]string{"PACKAGE", "PACKAGE consts AS\n  k CONSTANT NUMBER := 1;\nEND;\n"}))
 
@@ -229,10 +230,11 @@ func TestObjectSourceOfAMissingUnitIsAnError(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// A view's (or materialized view's) definition is the database's own DDL for it.
+// A view's definition is the database's own DDL for it.
 func TestObjectSourceOfAViewIsItsDDL(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(`SELECT DBMS_METADATA\.GET_DDL\(.* AND object_type IN \('VIEW', 'MATERIALIZED VIEW'\) `).
+	noMaterializedView(mock, "HR", "EMP_V")
+	mock.ExpectQuery(`SELECT DBMS_METADATA\.GET_DDL\(.* AND object_type IN \('VIEW'\) `).
 		WithArgs("HR", "EMP_V").
 		WillReturnRows(names("DDL", "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"HR\".\"EMP_V\" (\"ID\") AS \n  SELECT id FROM emp\n"))
 
@@ -242,12 +244,44 @@ func TestObjectSourceOfAViewIsItsDDL(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestObjectSourceOfAMissingViewIsAnError(t *testing.T) {
+func TestObjectSourceOfAMaterializedViewComesFromAllMviews(t *testing.T) {
 	session, mock := newMockSession(t)
-	mock.ExpectQuery(`DBMS_METADATA\.GET_DDL`).WithArgs("HR", "GONE").WillReturnRows(names("DDL"))
+	mock.ExpectQuery(mviewQuery).WithArgs("HR", "EMP_MV").
+		WillReturnRows(sqlmock.NewRows([]string{"OWNER", "MVIEW_NAME", "QUERY"}).AddRow("HR", "EMP_MV", "SELECT ID FROM EMP"))
 
-	_, err := session.ObjectSource(context.Background(), "HR", dbdriver.ObjectView, "GONE", "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `"HR"."GONE"`)
+	src, err := session.ObjectSource(context.Background(), "HR", dbdriver.ObjectView, "EMP_MV", "")
+	require.NoError(t, err)
+	assert.Equal(t, "CREATE MATERIALIZED VIEW \"HR\".\"EMP_MV\" AS\nSELECT ID FROM EMP", src)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A view the user cannot see is not in ALL_OBJECTS; Oracle's error for it comes
+// from DBMS_METADATA rather than a message of the driver's own.
+func TestObjectSourceOfAnInvisibleViewIsOraclesError(t *testing.T) {
+	session, mock := newMockSession(t)
+	noMaterializedView(mock, "SYS", "DBA_USERS")
+	mock.ExpectQuery(`AND object_type IN \('VIEW'\)`).WithArgs("SYS", "DBA_USERS").WillReturnRows(names("DDL"))
+	mock.ExpectQuery(`GET_DDL\('VIEW', n, o\)`).WithArgs("SYS", "DBA_USERS").
+		WillReturnError(errors.New(`ORA-31603: object "DBA_USERS" of type VIEW not found in schema "SYS"`))
+
+	_, err := session.ObjectSource(context.Background(), "SYS", dbdriver.ObjectView, "DBA_USERS", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ORA-31603")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The desktop asks for a package by the name ListObjects gave it, which reaches the
+// driver without the blank before "(package)" as well; a bare name finds it too.
+func TestObjectSourceOfAPackageByAnyListedSpelling(t *testing.T) {
+	for _, name := range []string{"EMP_PKG (package)", "EMP_PKG(package)", "EMP_PKG"} {
+		session, mock := newMockSession(t)
+		mock.ExpectQuery(sourceQueryPrefix+`AND type IN \('PROCEDURE', 'PACKAGE', 'PACKAGE BODY'\)`).
+			WithArgs("HR", "EMP_PKG").
+			WillReturnRows(sourceRows([2]string{"PACKAGE", "PACKAGE emp_pkg AS\nEND;"}))
+
+		src, err := session.ObjectSource(context.Background(), "HR", dbdriver.ObjectProcedure, name, "")
+		require.NoError(t, err, name)
+		assert.Equal(t, "CREATE OR REPLACE PACKAGE emp_pkg AS\nEND;\n/", src, name)
+		require.NoError(t, mock.ExpectationsWereMet(), name)
+	}
 }

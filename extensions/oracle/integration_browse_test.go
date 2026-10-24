@@ -161,13 +161,17 @@ func TestIntegrationBrowse(t *testing.T) {
 		assert.Equal(t, "CREATE OR REPLACE PACKAGE OPSKAT_BR_PKG AS\n  PROCEDURE hire;\nEND OPSKAT_BR_PKG;\n/\n\n"+
 			"CREATE OR REPLACE PACKAGE BODY OPSKAT_BR_PKG AS\n  PROCEDURE hire IS BEGIN NULL; END;\nEND OPSKAT_BR_PKG;\n/",
 			source(dbdriver.ObjectProcedure, "OPSKAT_BR_PKG (package)"))
+		// The desktop passes the listed name back; the blank may be gone by then.
+		assert.Equal(t, source(dbdriver.ObjectProcedure, "OPSKAT_BR_PKG (package)"), source(dbdriver.ObjectProcedure, "OPSKAT_BR_PKG(package)"))
+		assert.Equal(t, source(dbdriver.ObjectProcedure, "OPSKAT_BR_PKG (package)"), source(dbdriver.ObjectProcedure, "OPSKAT_BR_PKG"))
 		assert.Equal(t, "CREATE OR REPLACE FUNCTION OPSKAT_BR_F RETURN NUMBER AS\nBEGIN\n  RETURN 1;\nEND;\n/", source(dbdriver.ObjectFunction, "OPSKAT_BR_F"))
 		assert.Equal(t, "CREATE OR REPLACE TRIGGER OPSKAT_BR_T BEFORE INSERT ON OPSKAT_BR_EMP FOR EACH ROW\nBEGIN\n  NULL;\nEND;\n/", source(dbdriver.ObjectTrigger, "OPSKAT_BR_T"))
 		view := source(dbdriver.ObjectView, "OPSKAT_BR_V")
 		assert.Contains(t, view, `VIEW "`+user+`"."OPSKAT_BR_V"`)
 		assert.Contains(t, view, "OPSKAT_BR_EMP")
 		if withMV {
-			assert.Contains(t, source(dbdriver.ObjectView, "OPSKAT_BR_MV"), `MATERIALIZED VIEW "`+user+`"."OPSKAT_BR_MV"`)
+			assert.Equal(t, `CREATE MATERIALIZED VIEW "`+user+`"."OPSKAT_BR_MV" AS`+"\n"+`SELECT ID FROM OPSKAT_BR_DEPT`,
+				source(dbdriver.ObjectView, "OPSKAT_BR_MV"))
 		}
 		_, err = session.ObjectSource(integrationContext(t), user, dbdriver.ObjectProcedure, "OPSKAT_BR_NONE", "")
 		assert.Error(t, err)
@@ -181,11 +185,12 @@ func TestIntegrationBrowse(t *testing.T) {
 		if withMV {
 			ddl, err = session.TableDDL(integrationContext(t), user, "OPSKAT_BR_MV")
 			require.NoError(t, err)
-			assert.Contains(t, ddl, `MATERIALIZED VIEW "`+user+`"."OPSKAT_BR_MV"`)
+			assert.Equal(t, `CREATE MATERIALIZED VIEW "`+user+`"."OPSKAT_BR_MV" AS`+"\n"+`SELECT ID FROM OPSKAT_BR_DEPT`, ddl)
 		}
-		ddl, err = session.TableDDL(integrationContext(t), user, "OPSKAT_BR_NONE")
-		require.NoError(t, err)
-		assert.Empty(t, ddl)
+		// A table that is not there is Oracle's ORA-31603, not an empty DDL.
+		_, err = session.TableDDL(integrationContext(t), user, "OPSKAT_BR_NONE")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ORA-31603")
 	})
 }
 
@@ -212,6 +217,14 @@ func TestIntegrationBrowseWithoutPrivilege(t *testing.T) {
 		_, err = session.ObjectSource(integrationContext(t), "SYS", dbdriver.ObjectView, "ALL_USERS", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ORA-31603")
+		// SYS.OBJ$ and SYS.DBA_USERS are not visible to the user at all.
+		ddl, err := session.TableDDL(integrationContext(t), "SYS", "OBJ$")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ORA-")
+		assert.Empty(t, ddl)
+		_, err = session.ObjectSource(integrationContext(t), "SYS", dbdriver.ObjectView, "DBA_USERS", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ORA-")
 	})
 }
 

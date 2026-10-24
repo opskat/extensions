@@ -19,8 +19,9 @@ var _ sqldb.Catalog = dialect{}
 func (dialect) Descriptor() dbdriver.Descriptor { return descriptor() }
 
 // packageMarker ends a package's name in the procedure list, where packages sit
-// beside standalone procedures; ObjectSource reads it back.
-const packageMarker = " (package)"
+// beside standalone procedures; ObjectSource reads it back, with or without the
+// blank before it (the host hands the name back as the desktop shows it).
+const packageMarker = "(package)"
 
 // ListDatabases lists the schemas owning a visible table, view or code object,
 // without the ones Oracle maintains; the login user's own comes first (even
@@ -149,16 +150,18 @@ func procedures(ctx context.Context, conn *sql.Conn, database string) ([]dbdrive
 			return nil, err
 		}
 		if objectType == "PACKAGE" {
-			name += packageMarker
+			name += " " + packageMarker
 		}
 		out = append(out, dbdriver.ObjectMeta{Name: name, Type: dbdriver.ObjectProcedure})
 	}
 	return out, rows.Err()
 }
 
-// sourceTypes are the ALL_SOURCE types of each browsed kind of stored unit.
+// sourceTypes are the ALL_SOURCE types of each browsed kind of stored unit. A
+// package sits among the procedures, and procedures and packages share one name
+// space in a schema, so a procedure name finds whichever it is.
 var sourceTypes = map[string][]string{
-	dbdriver.ObjectProcedure: {"PROCEDURE"},
+	dbdriver.ObjectProcedure: {"PROCEDURE", "PACKAGE", "PACKAGE BODY"},
 	dbdriver.ObjectFunction:  {"FUNCTION"},
 	dbdriver.ObjectTrigger:   {"TRIGGER"},
 }
@@ -166,20 +169,12 @@ var sourceTypes = map[string][]string{
 // ObjectSource gives a view's (or materialized view's) DDL, and a stored unit's
 // source as the script that creates it: CREATE OR REPLACE before the stored
 // text, a "/" line after each unit; a package has its spec and, when it has one,
-// its body.
+// its body. The name is the one ListObjects gave, package marker included.
 func (dialect) ObjectSource(ctx context.Context, conn *sql.Conn, database, objType, name, _ string) (string, error) {
 	if objType == dbdriver.ObjectView {
-		ddl, err := metadataDDL(ctx, conn, database, name, []string{"VIEW", "MATERIALIZED VIEW"})
-		if err == nil && ddl == "" {
-			err = fmt.Errorf("view %s does not exist or the current user cannot see it", dialect{}.TableRef(database, name))
-		}
-		return ddl, err
+		return objectDDL(ctx, conn, database, name, []string{"VIEW"}, "VIEW")
 	}
-	types := sourceTypes[objType]
-	if pkg, isPackage := strings.CutSuffix(name, packageMarker); isPackage && objType == dbdriver.ObjectProcedure {
-		name, types = pkg, []string{"PACKAGE", "PACKAGE BODY"}
-	}
-	return unitSource(ctx, conn, database, name, types)
+	return unitSource(ctx, conn, database, strings.TrimSpace(strings.TrimSuffix(name, packageMarker)), sourceTypes[objType])
 }
 
 func unitSource(ctx context.Context, conn *sql.Conn, database, name string, types []string) (string, error) {

@@ -9,32 +9,45 @@ import (
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
 )
 
-// The DDL is the database's own, from DBMS_METADATA. Reading another schema's
-// objects through it takes SELECT_CATALOG_ROLE; without it Oracle's ORA-31603 is
-// the error.
+// The DDL is the database's own, from DBMS_METADATA, except a materialized view's,
+// which is written from ALL_MVIEWS (DBMS_METADATA takes ~36 s for it on 23ai,
+// longer than the host's browse timeout). Reading another schema's objects through
+// DBMS_METADATA takes SELECT_CATALOG_ROLE; without it Oracle's ORA-31603 is the
+// error.
 var _ sqldb.DDL = dialect{}
 
-// TableDDL gives the DDL of a table, or of a view or materialized view by that
-// name; "" when there is none the user can see.
+// TableDDL gives the DDL of a table, view or materialized view by that name. An
+// object the user cannot see, and one that does not exist, are the same to
+// Oracle: the error is DBMS_METADATA's ORA-31603, not an empty DDL.
 func (dialect) TableDDL(ctx context.Context, conn *sql.Conn, database, table string) (string, error) {
-	return metadataDDL(ctx, conn, database, table, []string{"TABLE", "VIEW", "MATERIALIZED VIEW"})
+	return objectDDL(ctx, conn, database, table, []string{"TABLE", "VIEW"}, "TABLE")
 }
 
-// metadataDDL picks the one object of objectTypes named name in the schema and
-// returns its DDL, trimmed; "" when there is no such object. A materialized view
-// shares its name with its container table, so it goes first; picking the object
-// in an inline view means GET_DDL runs for that object alone.
-func metadataDDL(ctx context.Context, conn *sql.Conn, database, name string, objectTypes []string) (string, error) {
-	var ddl sql.NullString
+// objectDDL gives the DDL of the materialized view, else of the object of
+// objectTypes, named name in the schema, trimmed. An object not in ALL_OBJECTS is
+// asked of DBMS_METADATA as a missingType, whose error is what the caller gets.
+func objectDDL(ctx context.Context, conn *sql.Conn, database, name string, objectTypes []string, missingType string) (string, error) {
+	var owner, mview string
+	var query sql.NullString
 	err := conn.QueryRowContext(ctx,
-		"SELECT DBMS_METADATA.GET_DDL(DECODE(object_type, 'MATERIALIZED VIEW', 'MATERIALIZED_VIEW', object_type), object_name, owner) AS DDL "+
-			"FROM (SELECT object_type, object_name, owner FROM all_objects "+
+		"SELECT owner, mview_name, query FROM all_mviews WHERE owner = "+ownerIs+" AND mview_name = :2",
+		database, name).Scan(&owner, &mview, &query)
+	if err == nil {
+		return "CREATE MATERIALIZED VIEW " + dialect{}.TableRef(owner, mview) + " AS\n" + strings.TrimSpace(query.String), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	var ddl sql.NullString
+	err = conn.QueryRowContext(ctx,
+		"SELECT DBMS_METADATA.GET_DDL(object_type, object_name, owner) AS DDL FROM all_objects "+
 			"WHERE owner = "+ownerIs+" AND object_name = :2 "+
-			"AND object_type IN ("+quotedList(objectTypes)+") "+
-			"ORDER BY DECODE(object_type, 'TABLE', 1, 0) FETCH FIRST 1 ROW ONLY)",
+			"AND object_type IN ("+quotedList(objectTypes)+") FETCH FIRST 1 ROW ONLY",
 		database, name).Scan(&ddl)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		err = conn.QueryRowContext(ctx,
+			"SELECT DBMS_METADATA.GET_DDL('"+missingType+"', n, o) AS DDL FROM (SELECT "+ownerIs+" AS o, :2 AS n FROM dual)",
+			database, name).Scan(&ddl)
 	}
 	if err != nil {
 		return "", err
