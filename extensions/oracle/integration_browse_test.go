@@ -248,3 +248,24 @@ func TestIntegrationTableData(t *testing.T) {
 		assert.Equal(t, int64(1), count)
 	})
 }
+
+// An empty string is NULL in Oracle, so the "is empty" / "is not empty" filters
+// are IS NULL / IS NOT NULL (a comparison with ” would match nothing).
+func TestIntegrationEmptyStringFilters(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, schema, table := writeSession(t, target, "OPSKAT_BR_EMPTY", "ID NUMBER(10), NOTE VARCHAR2(20)")
+		ctx := integrationContext(t)
+		for _, values := range []string{"(1, 'x')", "(2, '')", "(3, NULL)"} {
+			_, err := s.Execute(ctx, "INSERT INTO "+table+" (ID, NOTE) VALUES "+values)
+			require.NoError(t, err)
+		}
+		count := func(operator dbdriver.FilterOperator) int64 {
+			n, err := s.CountTableRows(ctx, schema, table,
+				[]dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "NOTE", Operator: operator}})
+			require.NoError(t, err)
+			return n
+		}
+		assert.Equal(t, int64(1), count(dbdriver.OpIsNotEmpty))
+		assert.Equal(t, int64(2), count(dbdriver.OpIsEmpty))
+	})
+}

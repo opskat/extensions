@@ -38,6 +38,8 @@ func TestIntegrationTableDDL(t *testing.T) {
 			Columns: []dbdriver.NewColumn{
 				{Name: "ID", Type: "NUMBER(10)"},
 				{Name: "Label", Type: "VARCHAR2(20 CHAR)", Nullable: true, DefaultValue: "none"},
+				// DEFAULT must precede NOT NULL in Oracle's column definition.
+				{Name: "Status", Type: "VARCHAR2(10)", DefaultValue: "new"},
 			},
 		})
 		require.NoError(t, err)
@@ -69,12 +71,13 @@ func TestIntegrationTableDDL(t *testing.T) {
 		model, err := s.AlterTableModel(ctx, schema, table)
 		require.NoError(t, err)
 		assert.Equal(t, "ddl test", model.Comment)
-		require.Len(t, model.Columns, 3)
+		require.Len(t, model.Columns, 4)
 		assert.Equal(t, dbdriver.ColumnDefinition{Name: "EMP_ID", Type: "NUMBER(12)", Nullable: true, Comment: "key"}, model.Columns[0])
 		assert.Equal(t, "VARCHAR2(40 CHAR)", model.Columns[1].Type)
 		assert.False(t, model.Columns[1].Nullable)
 		assert.Equal(t, "'other'", model.Columns[1].DefaultValue)
-		assert.Equal(t, dbdriver.ColumnDefinition{Name: "Added", Type: "NUMBER(3)", DefaultValue: "7", Comment: "new"}, model.Columns[2])
+		assert.Equal(t, dbdriver.ColumnDefinition{Name: "Status", Type: "VARCHAR2(10)", DefaultValue: "'new'"}, model.Columns[2])
+		assert.Equal(t, dbdriver.ColumnDefinition{Name: "Added", Type: "NUMBER(3)", DefaultValue: "7", Comment: "new"}, model.Columns[3])
 
 		// Nothing differs now: no statement, so no ORA-01451 / ORA-01442.
 		again, err := s.AlterTableStatements(ctx, schema, table, dbdriver.AlterTableRequest{

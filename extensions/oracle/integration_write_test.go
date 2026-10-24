@@ -124,6 +124,34 @@ func TestIntegrationGridEditWithoutPrimaryKey(t *testing.T) {
 	})
 }
 
+// Oracle cannot compare LOBs with =: without a primary key a row carrying a CLOB
+// and a BLOB is still found by its original values (DBMS_LOB.COMPARE), and
+// ROWID narrows it to one of two identical rows.
+func TestIntegrationGridEditWithoutPrimaryKeyLobColumns(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, schema, table := writeSession(t, target, "OPSKAT_WR_LOB", "N NUMBER(10), BODY CLOB, IMG BLOB")
+		ctx := integrationContext(t)
+		for range 2 {
+			_, err := s.Execute(ctx, "INSERT INTO "+table+" (N, BODY, IMG) VALUES (1, 'it''s a body', HEXTORAW('DEAD'))")
+			require.NoError(t, err)
+		}
+
+		row := map[string]any{"N": "1", "BODY": "it's a body", "IMG": "\xde\xad"}
+		statements, err := s.GridEditStatements(ctx, schema, table, dbdriver.GridEditRequest{
+			Columns: []string{"N", "BODY", "IMG"},
+			Updates: []dbdriver.GridUpdate{{Row: row, Set: []dbdriver.ColumnValue{{Column: "BODY", Value: "changed"}}}},
+			Deletes: []map[string]any{{"N": "1", "BODY": "changed", "IMG": "\xde\xad"}},
+		})
+		require.NoError(t, err)
+		runEach(t, s, statements.Updates)
+		assert.Equal(t, []string{"1", "1"}, queryStrings(t, s,
+			"SELECT COUNT(CASE WHEN DBMS_LOB.COMPARE(BODY, 'changed') = 0 THEN 1 END), "+
+				"COUNT(CASE WHEN DBMS_LOB.COMPARE(BODY, 'it''s a body') = 0 THEN 1 END) FROM "+table))
+		runEach(t, s, statements.Deletes)
+		assert.Equal(t, []string{"1"}, queryStrings(t, s, "SELECT COUNT(*) FROM "+table))
+	})
+}
+
 // A new row with nothing filled in takes every default, an identity column's too.
 func TestIntegrationGridEditInsertsADefaultRow(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {

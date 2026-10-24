@@ -140,5 +140,7 @@ func TestFilterSemantics(t *testing.T) {
 		Database:   "HR",
 		Table:      "EMP",
 		TableRef:   `"HR"."EMP"`,
+
+		EmptyStringIsNull: true,
 	})
 }

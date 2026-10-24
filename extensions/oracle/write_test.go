@@ -134,3 +134,35 @@ func TestDefaultRowInsertWithoutSchema(t *testing.T) {
 		`EXECUTE IMMEDIATE 'INSERT INTO "it''s ""q""" (' || c || ') VALUES (DEFAULT)'; END;`,
 		d.InsertRowSQL(d.TableRef("", `it's "q"`), "", "", false))
 }
+
+// Oracle cannot compare LOB columns with = (ORA-00932): a row is located by
+// DBMS_LOB.COMPARE, whose second argument must be of the column's LOB type, so a
+// BLOB's HEXTORAW (a RAW) is converted with TO_BLOB. Other types, and a column
+// the table does not list, compare with =.
+func TestGridEditStatementsLocateRowsByLobComparison(t *testing.T) {
+	session, mock := newMockSession(t)
+	mock.ExpectQuery(`FROM all_tab_columns c`).WithArgs("HR", "DOCS").
+		WillReturnRows(columnRows().
+			AddRow("ID", "NUMBER(10)", "YES", nil, nil, "0", "0", "0").
+			AddRow("BODY", "CLOB", "YES", nil, nil, "0", "0", "0").
+			AddRow("NBODY", "NCLOB", "YES", nil, nil, "0", "0", "0").
+			AddRow("IMG", "BLOB", "YES", nil, nil, "0", "0", "0"))
+
+	statements, err := session.GridEditStatements(context.Background(), "HR", "DOCS", dbdriver.GridEditRequest{
+		Columns: []string{"ID", "BODY", "NBODY", "IMG"},
+		Deletes: []map[string]any{{"ID": "1", "BODY": "it's", "NBODY": "n", "IMG": []byte{0xde, 0xad}}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{`DELETE FROM "HR"."DOCS" WHERE ROWID = (SELECT ROWID FROM "HR"."DOCS" WHERE "ID" = '1'` +
+		` AND DBMS_LOB.COMPARE("BODY", TO_CLOB('it''s')) = 0` +
+		` AND DBMS_LOB.COMPARE("NBODY", TO_NCLOB('n')) = 0` +
+		` AND DBMS_LOB.COMPARE("IMG", TO_BLOB(HEXTORAW('dead'))) = 0 FETCH FIRST 1 ROW ONLY)`}, statements.Deletes)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEqualitySQLByColumnType(t *testing.T) {
+	d := dialect{}
+	assert.Equal(t, `"A" = '1'`, d.EqualitySQL("NUMBER(10)", `"A"`, "'1'"))
+	assert.Equal(t, `"A" = '1'`, d.EqualitySQL("", `"A"`, "'1'"))
+	assert.Equal(t, `DBMS_LOB.COMPARE("A", TO_CLOB('x')) = 0`, d.EqualitySQL("clob", `"A"`, "'x'"))
+}

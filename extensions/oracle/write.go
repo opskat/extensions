@@ -17,7 +17,32 @@ import (
 var (
 	_ sqldb.RowWriter = dialect{}
 	_ sqldb.RowEditor = dialect{}
+
+	_ sqldb.EmptyStringNull  = dialect{}
+	_ sqldb.EqualityComparer = dialect{}
 )
+
+// EmptyStringIsNull: Oracle stores an empty string as NULL, so a filter for
+// empty (or not empty) values is IS NULL (IS NOT NULL).
+func (dialect) EmptyStringIsNull() bool { return true }
+
+// EqualitySQL locates a row by a column's original value. Oracle cannot compare
+// LOB columns with = (ORA-00932), so those use DBMS_LOB.COMPARE, whose second
+// argument must be of the column's type: the literal (a string, or HEXTORAW for
+// a BLOB) is converted with TO_CLOB / TO_NCLOB / TO_BLOB. Every other column,
+// and one the table does not list, compares with =.
+func (dialect) EqualitySQL(columnType, column, literal string) string {
+	name, _, _ := strings.Cut(columnType, "(")
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "CLOB":
+		return "DBMS_LOB.COMPARE(" + column + ", TO_CLOB(" + literal + ")) = 0"
+	case "NCLOB":
+		return "DBMS_LOB.COMPARE(" + column + ", TO_NCLOB(" + literal + ")) = 0"
+	case "BLOB":
+		return "DBMS_LOB.COMPARE(" + column + ", TO_BLOB(" + literal + ")) = 0"
+	}
+	return column + " = " + literal
+}
 
 // literals writes a binary column's value, whose displayed text is its bytes
 // (values.go), as HEXTORAW of those bytes. Everything else is a string literal of

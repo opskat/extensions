@@ -21,10 +21,11 @@ func TestCreateAndDropTableStatements(t *testing.T) {
 		Columns: []dbdriver.NewColumn{
 			{Name: "ID", Type: "NUMBER(10)"},
 			{Name: "Full Name", Type: "VARCHAR2(40 CHAR)", Nullable: true, DefaultValue: "anon"},
+			{Name: "Status", Type: "VARCHAR2(10)", DefaultValue: "new"},
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"CREATE TABLE \"HR\".\"Staff\" (\n  \"ID\" NUMBER(10) NOT NULL,\n  \"Full Name\" VARCHAR2(40 CHAR) DEFAULT 'anon'\n)"}, created)
+	assert.Equal(t, []string{"CREATE TABLE \"HR\".\"Staff\" (\n  \"ID\" NUMBER(10) NOT NULL,\n  \"Full Name\" VARCHAR2(40 CHAR) DEFAULT 'anon',\n  \"Status\" VARCHAR2(10) DEFAULT 'new' NOT NULL\n)"}, created)
 
 	dropped, err := session.DropTableStatements(ctx, "HR", "Staff")
 	require.NoError(t, err)
