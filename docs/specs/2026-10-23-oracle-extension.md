@@ -2,11 +2,11 @@
 
 > Status: Approved
 > Owner: OpsKat 维护者
-> Last updated: 2026-10-23（修订：服务名改为驱动专属字段、发布工具升级、minAppVersion；建表不含主键与注释）
+> Last updated: 2026-10-23（修订：服务名改为驱动专属字段、发布工具升级、minAppVersion；建表不含主键与注释；共用 SQL 库三处修正）
 
 **Objective:** 发布官方扩展 `oracle`，在 OpsKat 内置的「SQL 数据库」资产下提供 Oracle 驱动：用口令或 Kerberos、经直连 / SSH 隧道 / 代理连接 Oracle 19c 及以上（含 TCPS 与监听器重定向），在查询面板与 AI / opsctl 里执行 Oracle SQL 与 PL/SQL，并像内置驱动一样浏览、查看、编辑表与对象、建改删表、导入导出。
 
-**Hard invariant:** 只改 extensions 仓库，不改 opskat 宿主；仓库里已有的扩展与发布流程不变（**[用户决定]** 发布工具 `tools/publish` 只升级其依赖的宿主版本，使它认得 ABI 2.5 的契约声明；Elasticsearch 的索引条目不变）；扩展只经宿主给的途径联网，不接触资产口令以外不属于它的凭据（Kerberos 只拿票据）。
+**Hard invariant:** 不改 OpsKat 桌面端；**[用户决定]** opskat 的共用 SQL 库 `pkg/dbdriver/sqldb`（编进扩展的 WASM、不在桌面端运行）为 Oracle 修三处——建表列定义把 DEFAULT 写在 NOT NULL 之前、筛选的「为空 / 不为空」可由方言声明空串即 NULL、按原值定位行时可由方言给出按列类型的比较写法（Oracle 的 LOB 列）——内置驱动除建表 DDL 文本的这一处顺序外行为不变，扩展升级依赖取用；其余只改 extensions 仓库；仓库里已有的扩展与发布流程不变（**[用户决定]** 发布工具 `tools/publish` 只升级其依赖的宿主版本，使它认得 ABI 2.5 的契约声明；Elasticsearch 的索引条目不变）；扩展只经宿主给的途径联网，不接触资产口令以外不属于它的凭据（Kerberos 只拿票据）。
 
 ## 所处位置
 
