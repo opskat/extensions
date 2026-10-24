@@ -1,0 +1,15 @@
+{
+  "name": "sampledriver",
+  "version": "0.1.0",
+  "minAppVersion": "1.14.1",
+  "hostABI": "2.5",
+  "backend": {
+    "runtime": "wasm",
+    "binary": "main.wasm"
+  },
+  "capabilities": {
+    "network": { "databaseRedirects": true },
+    "databaseDrivers": ["sampledb"],
+    "databaseKerberos": true
+  }
+}

@@ -19,6 +19,9 @@ import (
 // that needs a real package copies it instead of compiling the guest again.
 var sampleWasm string
 
+// driverWasm is testdata/sampledriver, the hostABI 2.5 database driver guest.
+var driverWasm string
+
 func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
@@ -31,12 +34,15 @@ func runTests(m *testing.M) int {
 	}
 	defer os.RemoveAll(dir)
 	sampleWasm = filepath.Join(dir, "main.wasm")
-	build := exec.Command("go", "build", "-buildmode=c-shared", "-o", sampleWasm, ".")
-	build.Dir = filepath.Join("testdata", "sample")
-	build.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build sample extension: %v\n%s", err, out)
-		return 1
+	driverWasm = filepath.Join(dir, "driver.wasm")
+	for out, guest := range map[string]string{sampleWasm: "sample", driverWasm: "sampledriver"} {
+		build := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, ".")
+		build.Dir = filepath.Join("testdata", guest)
+		build.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+		if msg, err := build.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "build %s extension: %v\n%s", guest, err, msg)
+			return 1
+		}
 	}
 	return m.Run()
 }
@@ -97,6 +103,9 @@ func setVersion(t *testing.T, root, name, version string) {
 type fakeBuilder struct {
 	mu    sync.Mutex
 	built []string
+	// wasm overrides the guest copied into dist/ for an extension, by name; the
+	// default is the sample.
+	wasm map[string]string
 }
 
 func (b *fakeBuilder) Build(_ context.Context, extDir string) (string, error) {
@@ -110,9 +119,13 @@ func (b *fakeBuilder) Build(_ context.Context, extDir string) (string, error) {
 	if err := os.MkdirAll(filepath.Join(dist, "locales"), 0o755); err != nil {
 		return "", err
 	}
+	guest := sampleWasm
+	if w, ok := b.wasm[filepath.Base(extDir)]; ok {
+		guest = w
+	}
 	copies := map[string]string{
-		sampleWasm:                                     "main.wasm",
-		filepath.Join(extDir, "manifest.json"):         "manifest.json",
+		guest:                                  "main.wasm",
+		filepath.Join(extDir, "manifest.json"): "manifest.json",
 		filepath.Join(extDir, "locales", "en.json"):    filepath.Join("locales", "en.json"),
 		filepath.Join(extDir, "locales", "zh-CN.json"): filepath.Join("locales", "zh-CN.json"),
 	}
@@ -172,5 +185,19 @@ func newPublisher(root string, key ed25519.PrivateKey, b *fakeBuilder, p *fakePu
 		pusher:   p,
 		now:      func() time.Time { return now },
 		log:      io.Discard,
+	}
+}
+
+// addDriverExtension writes extensions/<name> as a copy of the hostABI 2.5
+// database driver fixture.
+func addDriverExtension(t *testing.T, root, name string) {
+	t.Helper()
+	dir := filepath.Join(root, "extensions", name)
+	writeFile(t, dir, "manifest.json", strings.Replace(
+		string(readFile(t, filepath.Join("testdata", "sampledriver", "manifest.json"))),
+		`"name": "sampledriver"`, fmt.Sprintf(`"name": %q`, name), 1))
+	for _, lang := range []string{"en", "zh-CN"} {
+		rel := filepath.Join("locales", lang+".json")
+		writeFile(t, dir, rel, string(readFile(t, filepath.Join("testdata", "sampledriver", rel))))
 	}
 }
