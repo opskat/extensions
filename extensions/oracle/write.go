@@ -18,13 +18,19 @@ var (
 	_ sqldb.RowWriter = dialect{}
 	_ sqldb.RowEditor = dialect{}
 
-	_ sqldb.EmptyStringNull  = dialect{}
-	_ sqldb.EqualityComparer = dialect{}
+	_ sqldb.EmptyStringNull   = dialect{}
+	_ sqldb.TypedFilterValues = dialect{}
+	_ sqldb.EqualityComparer  = dialect{}
 )
 
 // EmptyStringIsNull: Oracle stores an empty string as NULL, so a filter for
 // empty (or not empty) values is IS NULL (IS NOT NULL).
 func (dialect) EmptyStringIsNull() bool { return true }
+
+// TypedFilterValues: a LOCAL TIME ZONE column converts a plain string with the
+// session's timestamp format, which cannot read the zone the table view shows
+// (ORA-01830), so filter values are written like grid-edit values, per column type.
+func (dialect) TypedFilterValues() bool { return true }
 
 // EqualitySQL locates a row by a column's original value. Oracle cannot compare
 // LOB columns with = (ORA-00932), so those use DBMS_LOB.COMPARE, whose second

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -213,5 +214,77 @@ func TestIntegrationQueryPanelValues(t *testing.T) {
 		assert.Equal(t, "\x00A\x7f\x10", got["RW"])
 		assert.Equal(t, "\xde\xad\xbe\xef", got["BL"])
 		assert.Equal(t, "clob text", got["CL"])
+	})
+}
+
+// Filtering the table view by the shown value of a time zone or local time zone
+// timestamp finds its rows with =, between and in-list, in the page, the count
+// and the export read: the filter values are written like grid-edit values, as
+// TO_TIMESTAMP_TZ, since a plain string needs the session's format (ORA-01830).
+func TestIntegrationTableViewFiltersByShownZonedTimestamps(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, schema, table := writeSession(t, target, "OPSKAT_VAL_ZF",
+			"ID NUMBER(10), LT TIMESTAMP(0) WITH LOCAL TIME ZONE, TZ TIMESTAMP(0) WITH TIME ZONE")
+		ctx := integrationContext(t)
+		for _, row := range []string{
+			"(1, TIMESTAMP '2026-10-26 08:00:00 +00:00', TIMESTAMP '2026-10-26 08:00:00 +08:00')",
+			"(2, TIMESTAMP '2026-10-27 08:00:00 +00:00', TIMESTAMP '2026-10-27 08:00:00 +08:00')",
+			"(3, TIMESTAMP '2026-10-28 08:00:00 +00:00', TIMESTAMP '2026-10-28 08:00:00 +08:00')",
+		} {
+			_, err := s.Execute(ctx, "INSERT INTO "+table+" VALUES "+row)
+			require.NoError(t, err)
+		}
+		page, err := s.TableRows(ctx, schema, table, dbdriver.TableQuery{
+			Sorts: []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}},
+		}, dbdriver.Page{Index: 0, Size: 10})
+		require.NoError(t, err)
+		shown := func(column string) []any {
+			var values []any
+			for i := range page.Rows {
+				values = append(values, columnValues(page, i)[column])
+			}
+			return values
+		}
+		for _, column := range []string{"LT", "TZ"} {
+			values := shown(column)
+			require.Len(t, values, 3, column)
+			condition := func(operator dbdriver.FilterOperator, value any) []dbdriver.FilterItem {
+				return []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: column, Operator: operator, Value: value}}
+			}
+			for name, c := range map[string]struct {
+				filters []dbdriver.FilterItem
+				ids     []string
+			}{
+				"=":       {condition(dbdriver.OpEqual, values[1]), []string{"2"}},
+				"between": {condition(dbdriver.OpBetween, []any{values[0], values[1]}), []string{"1", "2"}},
+				"in_list": {condition(dbdriver.OpInList, []any{values[0], values[2]}), []string{"1", "3"}},
+			} {
+				label := column + " " + name
+				query := dbdriver.TableQuery{Filters: c.filters, Sorts: []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}}}
+				rs, err := s.TableRows(ctx, schema, table, query, dbdriver.Page{Index: 0, Size: 10})
+				require.NoError(t, err, label)
+				var ids []string
+				for i := range rs.Rows {
+					ids = append(ids, fmt.Sprint(columnValues(rs, i)["ID"]))
+				}
+				assert.Equal(t, c.ids, ids, label)
+
+				count, err := s.CountTableRows(ctx, schema, table, c.filters)
+				require.NoError(t, err, label)
+				assert.Equal(t, int64(len(c.ids)), count, label)
+
+				stream, err := s.StreamTableRows(ctx, schema, table, query)
+				require.NoError(t, err, label)
+				idColumn := slices.Index(stream.Columns(), "ID")
+				require.GreaterOrEqual(t, idColumn, 0, label)
+				var streamed []string
+				for stream.Next() {
+					streamed = append(streamed, fmt.Sprint(stream.Row()[idColumn]))
+				}
+				require.NoError(t, stream.Err(), label)
+				require.NoError(t, stream.Close(), label)
+				assert.Equal(t, c.ids, streamed, label)
+			}
+		}
 	})
 }

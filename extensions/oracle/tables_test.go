@@ -133,9 +133,16 @@ func TestTableRowsWithoutFilterOrSort(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// plainFilterValues is the dialect with filter values written as plain strings:
+// the shared filter semantics are checked against SQL text only, without the
+// column lookup typed filter values (dialect.TypedFilterValues) send first.
+type plainFilterValues struct{ dialect }
+
+func (plainFilterValues) TypedFilterValues() bool { return false }
+
 func TestFilterSemantics(t *testing.T) {
 	sqldbtest.RunFilterSemantics(t, sqldbtest.Dialect{
-		NewSession: func(db *sql.DB) dbdriver.Session { return sqldb.NewSession(db, dialect{}) },
+		NewSession: func(db *sql.DB) dbdriver.Session { return sqldb.NewSession(db, plainFilterValues{}) },
 		Quote:      func(name string) string { return `"` + name + `"` },
 		Database:   "HR",
 		Table:      "EMP",

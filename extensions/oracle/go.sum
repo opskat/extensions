@@ -19,8 +19,8 @@ github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyua
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/opskat/go-ora/v2 v2.9.1-opskat.1 h1:b8JqcUqcmd/hKMpFh+E977uKo59SDV3aiRya1ZONmDc=
 github.com/opskat/go-ora/v2 v2.9.1-opskat.1/go.mod h1:QgFInVi3ZWyqAiJwzBQA+nbKYKH77tdp1PYoCqhR2dU=
-github.com/opskat/opskat v1.14.1-0.20261024133254-8bd232b40160 h1:VikJkpzkyPZLvYR53Hzf3NwbiYf7mCHZ3G8zUl6NB6g=
-github.com/opskat/opskat v1.14.1-0.20261024133254-8bd232b40160/go.mod h1:JbG5gKH0Mp+gQS9Hds9nQyDiB4dIrTimYaMaAGszouU=
+github.com/opskat/opskat v1.14.1-0.20261024164226-c60d0bf8a0d6 h1:AkCxSj8Z19IbqTuefbuFwGO7US9W6F8mNtQCL7h/wIc=
+github.com/opskat/opskat v1.14.1-0.20261024164226-c60d0bf8a0d6/go.mod h1:JbG5gKH0Mp+gQS9Hds9nQyDiB4dIrTimYaMaAGszouU=
 github.com/pkg/diff v0.0.0-20210226163009-20ebb0f2a09e/go.mod h1:pJLUxLENpZxwdsKMEsNbx1VGcRFpLqf3715MtcvvzbA=
 github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
 github.com/rogpeppe/go-internal v1.15.0 h1:D0RCU5rMAp+SpgkiNdrjfJ+LX4J1M32V2NeCY7EJ6hc=

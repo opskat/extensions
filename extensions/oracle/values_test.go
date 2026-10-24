@@ -118,6 +118,13 @@ func TestQueryResultsShowOracleValues(t *testing.T) {
 
 const emp = `"HR"."EMP"`
 
+// expectFilterColumnLookup is the column and literal-rule lookup a filter with a
+// value sends first (dialect.TypedFilterValues).
+func expectFilterColumnLookup(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(tableColumnsQuery).WithArgs("HR", "EMP").
+		WillReturnRows(columnRows().AddRow("ID", "NUMBER(10)", "NO", nil, nil, "0", "0", "0"))
+}
+
 func expectTableColumns(mock sqlmock.Sqlmock, rows *sqlmock.Rows) {
 	mock.ExpectQuery(tableColumnTypesQuery).WithArgs("HR", "EMP").WillReturnRows(rows)
 }
@@ -131,6 +138,7 @@ func tableColumnTypes() *sqlmock.Rows {
 // column's precision.
 func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 	s, _, mock := newExecSession(t)
+	expectFilterColumnLookup(mock)
 	expectTableColumns(mock, tableColumnTypes().
 		AddRow("ID", "NUMBER", nil).
 		AddRow("DOC", "XMLTYPE", nil).
@@ -164,6 +172,7 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 // does not fail to decode.
 func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 	s, _, mock := newExecSession(t)
+	expectFilterColumnLookup(mock)
 	expectTableColumns(mock, tableColumnTypes().
 		AddRow("ID", "NUMBER", nil).
 		AddRow("DOC", "XMLTYPE", nil).
