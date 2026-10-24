@@ -169,7 +169,7 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 // Exporting a table (CSV / Excel / SQL) reads it in one unpaged query that the
 // shared session writes unmarked; it reads the columns the way the table view
 // does, so an exported XMLType is its text rather than NULL and a JSON column
-// does not fail to decode.
+// does not fail to decode. A filter value is a literal, whatever it spells.
 func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 	s, _, mock := newExecSession(t)
 	expectFilterColumnLookup(mock)
@@ -179,7 +179,7 @@ func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow("CFG", "JSON", nil))
 	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
-		`JSON_SERIALIZE("CFG" RETURNING CLOB) FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC`).
+		`JSON_SERIALIZE("CFG" RETURNING CLOB) FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
 			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
@@ -188,7 +188,7 @@ func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`))
 
 	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
-		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "1"}},
+		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "union"}},
 		Sorts:   []dbdriver.SortItem{{Column: "ID", Direction: dbdriver.SortAscending}},
 	})
 	require.NoError(t, err)
@@ -210,6 +210,22 @@ func TestTableQueryInAScriptIsNotRewritten(t *testing.T) {
 	_, err := s.Execute(context.Background(), `SELECT * FROM `+emp+`; SELECT 2 FROM DUAL`)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A query of the export's shape combined with another by a set operator is the
+// user's own: it is not rewritten, since the serialized SELECT list would not match
+// the other query's columns (ORA-01790).
+func TestTableQueryWithSetOperatorIsNotRewritten(t *testing.T) {
+	for _, op := range []string{"UNION ALL", "union", "INTERSECT", "MINUS", "EXCEPT"} {
+		t.Run(op, func(t *testing.T) {
+			s, _, mock := newExecSession(t)
+			query := `SELECT * FROM ` + emp + ` WHERE "ID" = '1' ` + op + ` SELECT * FROM "HR"."EMP2"`
+			mock.ExpectQuery(query).WillReturnRows(sqlmock.NewRows([]string{"ID"}).AddRow("1"))
+			_, err := s.Execute(context.Background(), query)
+			require.NoError(t, err)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
 
 // A table without such a column is read as it is: SELECT *.

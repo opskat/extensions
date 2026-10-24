@@ -115,8 +115,9 @@ func displayVector[T any](elements []T, format func(T) string) string {
 // "SELECT * FROM <table> ..." when no column needs serializing. The export's read
 // (StreamTableRows) is the one table query the shared session writes without the
 // mark, so a text that is just that — SELECT * FROM "SCHEMA"."TABLE" with at most
-// a WHERE and an ORDER BY — is read the same way (isTableRead). Any other query a
-// user types is never rewritten, so free SQL keeps go-ora's behaviour.
+// a WHERE and an ORDER BY — is read the same way (isTableRead), also when a user
+// types it. Any other query a user types is never rewritten, so free SQL keeps
+// go-ora's behaviour.
 //
 // SELECT * leaves out invisible columns, which have no COLUMN_ID.
 const tableColumnTypesQuery = "SELECT column_name, data_type, data_scale FROM all_tab_columns " +
@@ -230,15 +231,31 @@ func (c *conn) tableColumns(ctx context.Context, schema, table string) ([]dictCo
 
 // isTableRead reports whether the statement text is the table read the shared
 // session writes unmarked for an export: SELECT * FROM a reference TableRef wrote,
-// then nothing, a WHERE or an ORDER BY.
+// then nothing, a WHERE or an ORDER BY, and no set operator, which the export
+// never writes (its columns are quoted) and which would join the serialized
+// SELECT list to a query whose columns do not match it (ORA-01790).
 func isTableRead(text string) bool {
 	rest, ok := strings.CutPrefix(text, selectStarFrom)
 	if !ok {
 		return false
 	}
 	_, _, tail, err := splitTableRef(rest)
-	return err == nil && (tail == "" || strings.HasPrefix(tail, " WHERE ") || strings.HasPrefix(tail, " ORDER BY "))
+	if err != nil || (tail != "" && !strings.HasPrefix(tail, " WHERE ") && !strings.HasPrefix(tail, " ORDER BY ")) {
+		return false
+	}
+	masked, err := maskLiterals(tail)
+	if err != nil {
+		return false
+	}
+	for _, t := range tokenize(masked) {
+		if setOperators[t.text] {
+			return false
+		}
+	}
+	return true
 }
+
+var setOperators = map[string]bool{"UNION": true, "INTERSECT": true, "MINUS": true, "EXCEPT": true}
 
 // splitTableRef reads the "SCHEMA"."TABLE" (or bare "TABLE") that TableRef wrote
 // from the start of s, and returns what follows it.

@@ -346,3 +346,101 @@ func TestExecutePagedOtherStatementsRunUnpaged(t *testing.T) {
 	assert.Equal(t, int64(1), res.AffectedRows)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// ---- broken connections ----
+
+// brokenConn is a go-ora stand-in whose connection breaks at the statement failOn:
+// go-ora then answers driver.ErrBadConn. ran records the statements of every
+// connection opened.
+type brokenConn struct {
+	driver.Conn
+	ran    *[]string
+	failOn string
+}
+
+func (c *brokenConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	*c.ran = append(*c.ran, query)
+	if query == c.failOn {
+		return nil, driver.ErrBadConn
+	}
+	return driver.RowsAffected(1), nil
+}
+
+func (c *brokenConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	*c.ran = append(*c.ran, query)
+	if query == c.failOn {
+		return nil, driver.ErrBadConn
+	}
+	return &endlessRows{onNext: func() {}}, nil
+}
+
+func (c *brokenConn) Close() error { return nil }
+
+// brokenConnector opens a brokenConn per connection; the first breaks at failOn,
+// the later ones do not.
+type brokenConnector struct {
+	ran    []string
+	failOn string
+	opened int
+}
+
+func (b *brokenConnector) Connect(context.Context) (driver.Conn, error) {
+	b.opened++
+	failOn := ""
+	if b.opened == 1 {
+		failOn = b.failOn
+	}
+	return &conn{inner: &brokenConn{ran: &b.ran, failOn: failOn}}, nil
+}
+
+func (b *brokenConnector) Driver() driver.Driver { return nil }
+
+// database/sql runs a text again on another connection when the driver answers
+// driver.ErrBadConn. Once a statement of the text has run (and, outside a
+// transaction, committed) the text must not run again: the failure is the
+// statement's error, not a bad connection.
+func TestBrokenConnectionAfterARunStatementDoesNotRunTheTextAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(db *sql.DB) error
+	}{
+		{"execution", func(db *sql.DB) error {
+			_, err := db.ExecContext(context.Background(), "INSERT INTO T VALUES (1); INSERT INTO T VALUES (2)")
+			return err
+		}},
+		{"query", func(db *sql.DB) error {
+			rows, err := db.QueryContext(context.Background(), "INSERT INTO T VALUES (1); INSERT INTO T VALUES (2)")
+			if err == nil {
+				_ = rows.Close()
+			}
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &brokenConnector{failOn: "INSERT INTO T VALUES (2)"}
+			db := sql.OpenDB(c)
+			t.Cleanup(func() { _ = db.Close() })
+
+			err := tc.run(db)
+			assert.Equal(t, []string{"INSERT INTO T VALUES (1)", "INSERT INTO T VALUES (2)"}, c.ran, "the first INSERT runs once")
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, driver.ErrBadConn)
+			assert.Contains(t, err.Error(), "statement 2 of 2")
+		})
+	}
+}
+
+// A connection that is broken before anything of the text ran is retried on
+// another one, as database/sql does for any statement.
+func TestBrokenConnectionBeforeTheFirstStatementIsRetried(t *testing.T) {
+	c := &brokenConnector{failOn: "INSERT INTO T VALUES (1)"}
+	db := sql.OpenDB(c)
+	t.Cleanup(func() { _ = db.Close() })
+
+	res, err := db.ExecContext(context.Background(), "INSERT INTO T VALUES (1); INSERT INTO T VALUES (2)")
+	require.NoError(t, err)
+	n, err := res.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+	assert.Equal(t, []string{"INSERT INTO T VALUES (1)", "INSERT INTO T VALUES (1)", "INSERT INTO T VALUES (2)"}, c.ran)
+}

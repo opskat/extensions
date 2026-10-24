@@ -53,6 +53,28 @@ func numbers(from, to int) []string {
 	return out
 }
 
+// A query that declares a PL/SQL function in its WITH clause runs as one
+// statement, in the query panel's pages too.
+func TestIntegrationQueryWithPLSQLFunction(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		s, table := execSession(t, target)
+		query := "WITH FUNCTION twice(n NUMBER) RETURN NUMBER IS BEGIN RETURN n * 2; END;\n" +
+			"SELECT twice(N) FROM " + table + " WHERE N <= 3 ORDER BY N;"
+
+		res, err := s.Execute(integrationContext(t), query)
+		require.NoError(t, err)
+		require.NotNil(t, res.Rows)
+		assert.Equal(t, []string{"2", "4", "6"}, firstColumn(res.Rows))
+
+		res, err = s.ExecutePaged(integrationContext(t), query+"\n/", dbdriver.Page{Index: 1, Size: 2})
+		require.NoError(t, err)
+		require.NotNil(t, res.Rows)
+		require.NotNil(t, res.Rows.Total)
+		assert.Equal(t, int64(3), *res.Rows.Total)
+		assert.Equal(t, []string{"6"}, firstColumn(res.Rows))
+	})
+}
+
 func TestIntegrationExecutePaged(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
 		s, table := execSession(t, target)

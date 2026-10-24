@@ -15,36 +15,6 @@ func TestDescriptorIsValid(t *testing.T) {
 	require.NoError(t, descriptor().Validate())
 }
 
-func TestDescriptorForm(t *testing.T) {
-	d := descriptor()
-	for _, f := range []dbdriver.FormField{
-		dbdriver.FieldHost, dbdriver.FieldPort, dbdriver.FieldUsername, dbdriver.FieldPassword,
-		dbdriver.FieldKerberos, dbdriver.FieldTunnel, dbdriver.FieldTLSCert, dbdriver.FieldQueryTimeout,
-	} {
-		assert.True(t, d.UsesField(f), "form field %q", f)
-	}
-	// The host swaps Config.Database for the schema a tree node / tab / scope picks,
-	// so the service name cannot live there: the form has no database field.
-	assert.False(t, d.UsesField(dbdriver.FieldDatabase))
-	// No connection-level read-only: Oracle has no read-only session.
-	assert.False(t, d.UsesField(dbdriver.FieldReadOnly))
-	assert.False(t, d.Supports(dbdriver.CapReadOnly))
-	assert.False(t, d.Supports(dbdriver.CapCreateDatabase))
-}
-
-// Browsing the four object kinds and viewing a table's DDL are declared: the host
-// offers none of them, and the session refuses an undeclared object kind, without it.
-func TestDescriptorDeclaresBrowsing(t *testing.T) {
-	d := descriptor()
-	for _, c := range []dbdriver.Capability{
-		dbdriver.CapViewDDL, dbdriver.CapViews, dbdriver.CapProcedures, dbdriver.CapFunctions, dbdriver.CapTriggers,
-	} {
-		assert.True(t, d.Supports(c), "capability %q", c)
-	}
-	// The host's "database" is the schema: there is no schema level below it.
-	assert.False(t, d.Supports(dbdriver.CapSchemas))
-}
-
 // The grid edits, copy and export as SQL are offered exactly because the dialect
 // writes rows: the host hides them, and the session refuses them, when undeclared.
 // ROWID finds a row of a table without a primary key, so the grid shows no

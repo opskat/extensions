@@ -109,6 +109,33 @@ func TestSplitPLSQLBlocks(t *testing.T) {
 	}
 }
 
+// A query may declare PL/SQL functions and procedures in its WITH clause: their
+// ';' do not end it. Like a block it runs until a lone '/' or the end of the text;
+// like a plain statement its own closing ';' is not part of it.
+func TestSplitQueryWithPLSQLDeclarations(t *testing.T) {
+	query := "WITH\n  FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END;\nSELECT f FROM dual"
+	got := split(t, query+";\n/\nSELECT 2 FROM dual")
+	assert.Equal(t, []string{query, "SELECT 2 FROM dual"}, texts(got))
+	// it runs PL/SQL, so it is typed as a block: a policy that allows SELECT does
+	// not let a function that writes through
+	assert.Equal(t, "PLSQL BLOCK", got[0].Type)
+
+	query = "with procedure p IS BEGIN NULL; END; FUNCTION f RETURN NUMBER IS BEGIN p; RETURN 1; END; SELECT f FROM dual"
+	assert.Equal(t, []string{query}, texts(split(t, query)))
+
+	// a WITH without declarations is a plain statement, also when its query is
+	// named FUNCTION or PROCEDURE
+	for _, query := range []string{
+		"WITH x AS (SELECT 1 n FROM dual) SELECT n FROM x",
+		"WITH function AS (SELECT 1 x FROM dual) SELECT x FROM function",
+		"WITH procedure (x) AS (SELECT 1 FROM dual) SELECT x FROM procedure",
+	} {
+		got = split(t, query+"; SELECT 2 FROM dual")
+		assert.Equal(t, []string{query, "SELECT 2 FROM dual"}, texts(got), query)
+		assert.Equal(t, "SELECT", got[0].Type, query)
+	}
+}
+
 func TestSplitStoredProgramsAreBlocks(t *testing.T) {
 	for _, head := range []string{
 		"CREATE PROCEDURE p AS", "create or replace procedure p is", "CREATE OR REPLACE FUNCTION f RETURN NUMBER IS",
@@ -197,6 +224,8 @@ func TestClassifyDanger(t *testing.T) {
 		"BEGIN\n  FORALL i IN 1 .. 10\n    DELETE FROM t;\nEND;":                                                          dbdriver.ReasonNoWhereDelete,
 		"BEGIN\n  x := 1;\n  FORALL i IN INDICES OF ids SAVE EXCEPTIONS\n    UPDATE t SET a = 1;\nEND;":                   dbdriver.ReasonNoWhereUpdate,
 		"BEGIN\n  FORALL i IN 1 .. ids.COUNT\n    DELETE FROM t WHERE id = ids(i);\n  ids.DELETE;\nEND;":                  "",
+		"WITH FUNCTION f RETURN NUMBER IS BEGIN DELETE FROM t; RETURN 1; END;\nSELECT f FROM dual":                        dbdriver.ReasonNoWhereDelete,
+		"WITH FUNCTION f RETURN NUMBER IS BEGIN RETURN 1; END;\nSELECT f FROM t WHERE a = 1":                              "",
 		"CREATE OR REPLACE PROCEDURE p AS\nBEGIN\n  DELETE FROM t;\nEND;":                                                 "",
 		"CREATE TRIGGER trg BEFORE DELETE OR UPDATE ON t\nBEGIN\n  NULL;\nEND;":                                           "",
 	} {

@@ -14,7 +14,9 @@ import (
 // touching the database. A plain statement ends at a top-level ';' (not part of
 // its text); a PL/SQL block (anonymous BEGIN / DECLARE, or a stored program
 // CREATE) ends at a '/' alone on its line or at the end of the text, and its text
-// keeps the closing ';'. A '/' alone on a line also ends a plain statement, as in
+// keeps the closing ';'. A query whose WITH clause declares PL/SQL functions or
+// procedures ends like a block, but its closing ';' is not part of its text, as
+// for any query. A '/' alone on a line also ends a plain statement, as in
 // SQL*Plus. Text it cannot split (an unclosed quote or comment) is an error that
 // names the position.
 func splitOracle(_ context.Context, sql string) ([]dbdriver.Statement, error) {
@@ -33,12 +35,15 @@ func splitOracle(_ context.Context, sql string) ([]dbdriver.Statement, error) {
 			continue
 		}
 		var end, next int
-		if plsqlStart.MatchString(masked[start:]) {
+		if plsqlStart.MatchString(masked[start:]) || declaresPLSQL(masked[start:]) {
 			end, next = blockEnd(masked, start)
 		} else {
 			end, next = plainEnd(masked, start)
 		}
 		text := strings.TrimRight(masked[start:end], " \t\r\n")
+		if declaresPLSQL(text) {
+			text = strings.TrimRight(strings.TrimSuffix(text, ";"), " \t\r\n")
+		}
 		end = start + len(text)
 		if end > start {
 			out = append(out, classify(sql, masked, start, end))
@@ -51,6 +56,16 @@ func splitOracle(_ context.Context, sql string) ([]dbdriver.Statement, error) {
 // plsqlStart matches the statements that end at a lone '/' rather than at ';'. An
 // anonymous block may open with labels (<<outer>>).
 var plsqlStart = regexp.MustCompile(`(?i)^(?:(?:<<\s*[^<>\s]+\s*>>\s*)*(?:BEGIN|DECLARE)\b|CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:EDITIONABLE|NONEDITIONABLE)\s+)?(?:PROCEDURE|FUNCTION|PACKAGE|TRIGGER|TYPE)\b)`)
+
+var plsqlQueryStart = regexp.MustCompile(`(?i)^WITH\s+(?:FUNCTION|PROCEDURE)\s+([^\s(]+)`)
+
+// declaresPLSQL reports whether the masked statement is a query whose WITH clause
+// declares a PL/SQL function or procedure ("WITH FUNCTION f RETURN …"), not one
+// whose subquery is named FUNCTION or PROCEDURE ("WITH function AS (…)").
+func declaresPLSQL(masked string) bool {
+	m := plsqlQueryStart.FindStringSubmatch(masked)
+	return m != nil && !strings.EqualFold(m[1], "AS")
+}
 
 func isBlank(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
 
@@ -284,6 +299,10 @@ func classify(sql, masked string, start, end int) dbdriver.Statement {
 	switch first {
 	case "SELECT", "WITH":
 		st.Type = "SELECT"
+		if declaresPLSQL(masked[start:end]) {
+			// A query that declares PL/SQL runs it as a block does.
+			st.Type, st.Reason = "PLSQL BLOCK", blockDanger(toks)
+		}
 	case "BEGIN", "DECLARE":
 		st.Type = "PLSQL BLOCK"
 		st.Reason = blockDanger(toks)

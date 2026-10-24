@@ -53,6 +53,8 @@ Use an ASCII password there; data in any language reads and writes correctly.
   `BEGIN` / `DECLARE`, or `CREATE [OR REPLACE] PROCEDURE / FUNCTION / PACKAGE /
   TRIGGER / TYPE` — keeps its closing `;` and runs until a line holding only `/`, or
   the end of the text: put that `/` line after a block that more statements follow.
+  A query that declares functions in its WITH clause (`WITH FUNCTION … SELECT …`)
+  counts as a PL/SQL block and also runs to such a `/` line or the end of the text.
 - Page with `OFFSET n ROWS FETCH NEXT m ROWS ONLY`; there is no `LIMIT`.
 - A subquery alias takes no `AS` (`SELECT * FROM (…) t`), and an alias must not
   start with `_`.

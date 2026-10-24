@@ -103,10 +103,16 @@ func (c *conn) execStatement(ctx context.Context, stmts []dbdriver.Statement, i 
 }
 
 // statementError names statement i of a script of n in err; the error of a text
-// of one statement stays Oracle's own.
+// of one statement stays Oracle's own. A broken connection (driver.ErrBadConn)
+// after statement 0 is no longer one: database/sql would run the whole text again
+// on another connection, and the statements before i have run and, outside a
+// transaction, committed.
 func statementError(err error, i, n int) error {
 	if err == nil || n == 1 {
 		return err
+	}
+	if i > 0 && errors.Is(err, driver.ErrBadConn) {
+		return fmt.Errorf("oracle: statement %d of %d: the connection broke after the statements before it ran: %v", i+1, n, err)
 	}
 	return fmt.Errorf("oracle: statement %d of %d: %w", i+1, n, err)
 }

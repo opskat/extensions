@@ -49,6 +49,8 @@ func TestIntegrationTableDDL(t *testing.T) {
 			for _, n := range []string{renamed, name} {
 				_, _ = s.Execute(integrationContext(t), "DROP TABLE "+dialect{}.TableRef(schema, n)+" PURGE")
 			}
+			// The session's DROP TABLE below leaves the table in the recycle bin.
+			_, _ = s.Execute(integrationContext(t), "PURGE TABLE "+dialect{}.TableRef(schema, renamed))
 		})
 
 		_, err = s.Execute(ctx, fmt.Sprintf(`INSERT INTO "%s"."%s" ("ID") VALUES (1)`, schema, name))
