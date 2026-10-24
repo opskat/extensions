@@ -48,8 +48,11 @@ Use an ASCII password there; data in any language reads and writes correctly.
 
 ## Writing SQL for Oracle
 
-- Write statements without a trailing `;`, except PL/SQL blocks (`BEGIN … END;`),
-  which end with their `;`.
+- A text may hold several statements; they run one at a time. End a plain statement
+  with `;` (the driver removes it before running the statement). A PL/SQL block —
+  `BEGIN` / `DECLARE`, or `CREATE [OR REPLACE] PROCEDURE / FUNCTION / PACKAGE /
+  TRIGGER / TYPE` — keeps its closing `;` and runs until a line holding only `/`, or
+  the end of the text: put that `/` line after a block that more statements follow.
 - Page with `OFFSET n ROWS FETCH NEXT m ROWS ONLY`; there is no `LIMIT`.
 - A subquery alias takes no `AS` (`SELECT * FROM (…) t`), and an alias must not
   start with `_`.
