@@ -138,3 +138,23 @@ func TestDriverFieldLabelsAreTranslated(t *testing.T) {
 		}
 	}
 }
+
+// Creating, dropping, truncating and altering tables are declared because the
+// session generates them (CREATE / DROP shared, TRUNCATE and ALTER by the dialect);
+// every attribute the dialect can alter is declared, so the dialog unlocks them.
+func TestDescriptorDeclaresTableDDL(t *testing.T) {
+	d := descriptor()
+	_, truncates := any(dialect{}).(sqldb.TableTruncator)
+	alterer, alters := any(dialect{}).(sqldb.TableAlterer)
+	require.True(t, truncates && alters)
+	for _, c := range []dbdriver.Capability{dbdriver.CapCreateTable, dbdriver.CapDropTable} {
+		assert.True(t, d.Supports(c), "capability %q", c)
+	}
+	assert.Equal(t, truncates, d.Supports(dbdriver.CapTruncateTable))
+	assert.Equal(t, alters, d.Supports(dbdriver.CapAlterTable))
+	assert.Equal(t, alterer.AlterAttributes(), d.AlterTableAttributes)
+	assert.ElementsMatch(t, []dbdriver.AlterAttribute{
+		dbdriver.AlterTableComment, dbdriver.AlterColumnType, dbdriver.AlterColumnNullable,
+		dbdriver.AlterColumnDefault, dbdriver.AlterColumnComment,
+	}, d.AlterTableAttributes)
+}
