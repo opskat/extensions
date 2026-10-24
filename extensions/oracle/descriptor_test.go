@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/opskat/opskat/pkg/dbdriver"
+	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,6 +49,23 @@ func TestDescriptorDeclaresBrowsing(t *testing.T) {
 	}
 	// The host's "database" is the schema: there is no schema level below it.
 	assert.False(t, d.Supports(dbdriver.CapSchemas))
+}
+
+// The grid edits, copy and export as SQL are offered exactly because the dialect
+// writes rows: the host hides them, and the session refuses them, when undeclared.
+// ROWID finds a row of a table without a primary key, so the grid shows no
+// "no primary key" warning.
+func TestDescriptorDeclaresRowWriting(t *testing.T) {
+	d := descriptor()
+	_, writes := any(dialect{}).(sqldb.RowWriter)
+	_, edits := any(dialect{}).(sqldb.RowEditor)
+	require.True(t, writes && edits)
+	assert.Equal(t, writes, d.Supports(dbdriver.CapExportSQL))
+	assert.Equal(t, writes, d.Supports(dbdriver.CapCopySQL))
+	assert.Equal(t, writes && edits, d.Supports(dbdriver.CapGridEdit))
+	_, exact := dialect{}.ExactRow(`"T"`, "1 = 1")
+	assert.True(t, exact)
+	assert.Equal(t, exact, d.LocatesRowWithoutPrimaryKey)
 }
 
 func TestDriverOptionsRequireServiceName(t *testing.T) {

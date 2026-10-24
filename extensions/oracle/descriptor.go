@@ -45,7 +45,11 @@ func descriptor() dbdriver.Descriptor {
 		Capabilities: []dbdriver.Capability{
 			dbdriver.CapClassifyStatements,
 			dbdriver.CapViewDDL, dbdriver.CapViews, dbdriver.CapProcedures, dbdriver.CapFunctions, dbdriver.CapTriggers,
+			dbdriver.CapGridEdit, dbdriver.CapExportSQL, dbdriver.CapCopySQL,
 		},
+		// ROWID finds the one row to change or delete in a table without a
+		// primary key (write.go).
+		LocatesRowWithoutPrimaryKey: true,
 		DriverFields: []dbdriver.DriverField{
 			{
 				Key: optServiceName, Type: dbdriver.FieldTypeText, Tab: dbdriver.TabConnection, Required: true,

@@ -26,6 +26,13 @@ const minMajorVersion = 19
 // is readable by every user, unlike V$INSTANCE.
 const versionQuery = `SELECT VERSION FROM PRODUCT_COMPONENT_VERSION WHERE PRODUCT LIKE 'Oracle%' AND ROWNUM = 1`
 
+// dateFormatsStatement makes the session convert text to DATE, TIMESTAMP and
+// TIMESTAMP WITH TIME ZONE in the layout the grid shows them (values.go), so a
+// shown value written back as a quoted literal (write.go) converts exactly: FF9
+// reads any fraction up to nanoseconds, and a value shown without one too.
+const dateFormatsStatement = `ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' ` +
+	`NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM'`
+
 // open logs in to Oracle through the reach path the host handed over and
 // confirms the database answers. Every connection of the returned pool is one
 // go-ora login made by connector: the session is per schema (the host opens one
@@ -191,7 +198,8 @@ func (c *tlsOnlyConn) Write(p []byte) (int, error) {
 }
 
 // connector logs in one connection per Connect and prepares its session: it
-// rejects a database older than 19c and makes the session's schema current.
+// rejects a database older than 19c, sets the date formats and makes the
+// session's schema current.
 type connector struct {
 	// login logs in one go-ora connection (goOraLogin).
 	login func(ctx context.Context) (driver.Conn, error)
@@ -219,6 +227,9 @@ func (c *connector) prepare(ctx context.Context, inner driver.Conn) error {
 		return fmt.Errorf("oracle: read the database version: %w", err)
 	}
 	if err := checkVersion(version); err != nil {
+		return err
+	}
+	if _, err := execContext(ctx, inner, dateFormatsStatement, nil); err != nil {
 		return err
 	}
 	if c.schema == "" {

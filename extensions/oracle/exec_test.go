@@ -22,6 +22,7 @@ func newExecSession(t *testing.T) (*sqldb.Session, *sql.DB, sqlmock.Sqlmock) {
 	t.Helper()
 	login, mock := mockLogin(t)
 	expectVersion(mock, "19.0.0.0.0")
+	expectDateFormats(mock)
 	db := sql.OpenDB(&connector{login: login})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })

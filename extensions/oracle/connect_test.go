@@ -282,7 +282,7 @@ func TestTLSConnectionRefusesPlaintext(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// ---- session preparation: version check and current schema ----
+// ---- session preparation: version check, date formats and current schema ----
 
 // mockLogin returns a login that hands out the sqlmock connection, standing in for
 // a go-ora login.
@@ -299,9 +299,45 @@ func expectVersion(mock sqlmock.Sqlmock, version string) {
 	mock.ExpectQuery(versionQuery).WillReturnRows(sqlmock.NewRows([]string{"VERSION"}).AddRow(version))
 }
 
+// dateFormats is the statement every session runs after the version check.
+const dateFormats = `ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' ` +
+	`NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM'`
+
+func expectDateFormats(mock sqlmock.Sqlmock) {
+	mock.ExpectExec(dateFormats).WillReturnResult(sqlmock.NewResult(0, 0))
+}
+
+// A date or timestamp the grid shows ("2026-10-23 01:02:03", its fraction up to
+// nanoseconds, " +08:00") is written back as a quoted literal (write.go), so the
+// session converts text in exactly that layout.
+func TestConnectSetsDateFormats(t *testing.T) {
+	login, mock := mockLogin(t)
+	expectVersion(mock, "19.0.0.0.0")
+	expectDateFormats(mock)
+
+	db := sql.OpenDB(&connector{login: login})
+	defer db.Close()
+	require.NoError(t, db.PingContext(context.Background()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestConnectReturnsDateFormatError(t *testing.T) {
+	login, mock := mockLogin(t)
+	expectVersion(mock, "19.0.0.0.0")
+	formatErr := errors.New("ORA-01821: date format not recognized")
+	mock.ExpectExec(dateFormats).WillReturnError(formatErr)
+	mock.ExpectClose()
+
+	db := sql.OpenDB(&connector{login: login, schema: "HR"})
+	defer db.Close()
+	assert.ErrorIs(t, db.PingContext(context.Background()), formatErr)
+	assert.NoError(t, mock.ExpectationsWereMet(), "the connection is closed, no schema is set")
+}
+
 func TestConnectSetsCurrentSchema(t *testing.T) {
 	login, mock := mockLogin(t)
 	expectVersion(mock, "19.0.0.0.0")
+	expectDateFormats(mock)
 	mock.ExpectExec(`ALTER SESSION SET CURRENT_SCHEMA = "HR"`).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	db := sql.OpenDB(&connector{login: login, schema: "HR"})
@@ -313,6 +349,7 @@ func TestConnectSetsCurrentSchema(t *testing.T) {
 func TestConnectQuotesSchema(t *testing.T) {
 	login, mock := mockLogin(t)
 	expectVersion(mock, "23.0.0.0.0")
+	expectDateFormats(mock)
 	mock.ExpectExec(`ALTER SESSION SET CURRENT_SCHEMA = "my""Schema"`).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	db := sql.OpenDB(&connector{login: login, schema: `my"Schema`})
@@ -324,6 +361,7 @@ func TestConnectQuotesSchema(t *testing.T) {
 func TestConnectWithoutSchemaKeepsLoginSchema(t *testing.T) {
 	login, mock := mockLogin(t)
 	expectVersion(mock, "21.0.0.0.0")
+	expectDateFormats(mock)
 
 	db := sql.OpenDB(&connector{login: login})
 	defer db.Close()
@@ -373,6 +411,7 @@ func TestConnectReturnsLoginErrorAsIs(t *testing.T) {
 func TestConnectReturnsSchemaError(t *testing.T) {
 	login, mock := mockLogin(t)
 	expectVersion(mock, "19.0.0.0.0")
+	expectDateFormats(mock)
 	schemaErr := errors.New("ORA-01435: user does not exist")
 	mock.ExpectExec(`ALTER SESSION SET CURRENT_SCHEMA = "NOPE"`).WillReturnError(schemaErr)
 	mock.ExpectClose()
@@ -387,6 +426,7 @@ func TestConnectReturnsSchemaError(t *testing.T) {
 func TestConnPassesStatementsThrough(t *testing.T) {
 	login, mock := mockLogin(t)
 	expectVersion(mock, "19.0.0.0.0")
+	expectDateFormats(mock)
 	mock.ExpectQuery("SELECT 1 FROM DUAL").WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow("1"))
 	mock.ExpectExec("DELETE FROM T").WillReturnResult(sqlmock.NewResult(0, 3))
 

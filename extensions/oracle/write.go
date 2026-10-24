@@ -1,0 +1,90 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
+)
+
+// Row statements: copy / export as SQL and the grid's edits. The table and
+// columns are quoted as the dictionary spells them (Tables). The grid runs its
+// statements one at a time, so the dialect's own statements end without ';'
+// (the INSERTs of copy / export are the shared session's and end with one, ready
+// to run as a script).
+var (
+	_ sqldb.RowWriter = dialect{}
+	_ sqldb.RowEditor = dialect{}
+)
+
+// literals writes a binary column's value, whose displayed text is its bytes
+// (values.go), as HEXTORAW of those bytes. Everything else is a string literal of
+// the displayed text, which Oracle converts to the column's type: a number as
+// written, and a DATE / TIMESTAMP / TIMESTAMP WITH TIME ZONE ("2006-01-02
+// 15:04:05", the fraction, " +08:00") by the session's NLS_DATE_FORMAT /
+// NLS_TIMESTAMP_FORMAT / NLS_TIMESTAMP_TZ_FORMAT, which must spell that layout.
+var literals = sqldb.Literals{
+	Binary: func(columnType string) (string, string, bool) {
+		name, _, _ := strings.Cut(columnType, "(")
+		switch strings.ToUpper(strings.TrimSpace(name)) {
+		case "RAW", "LONG RAW", "BLOB":
+			return "HEXTORAW('", "')", true
+		}
+		return "", "", false
+	},
+}
+
+func (dialect) Literals(context.Context, *sql.Conn) (sqldb.Literals, error) { return literals, nil }
+
+func (dialect) UpdateRowSQL(tableRef, set, where string) string {
+	return fmt.Sprintf("UPDATE %s SET %s WHERE %s", tableRef, set, where)
+}
+
+// InsertRowSQL writes the filled-in columns. An Oracle identity column that
+// rejects explicit values (GENERATED ALWAYS) has no override switch, so identity
+// is never set (TableColumns marks it NoIdentityOverride).
+func (dialect) InsertRowSQL(tableRef, columns, values string, _ bool) string {
+	if columns == "" {
+		return defaultRowInsert(tableRef)
+	}
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableRef, columns, values)
+}
+
+// defaultRowInsert inserts a row of defaults. Oracle has no INSERT ... DEFAULT
+// VALUES and an INSERT names at least one column, so the block looks up the
+// table's first column that takes a value (not hidden or virtual; an identity
+// column only when there is no other) and gives it DEFAULT.
+func defaultRowInsert(tableRef string) string {
+	schema, table, err := splitTableRef(tableRef)
+	if err != nil {
+		panic(fmt.Sprintf("oracle: %q is not a reference TableRef wrote: %v", tableRef, err))
+	}
+	owner := "SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')"
+	if schema != "" {
+		owner = sqlString(schema)
+	}
+	return "DECLARE c VARCHAR2(300); BEGIN " +
+		`SELECT '"' || REPLACE(column_name, '"', '""') || '"' INTO c FROM all_tab_cols ` +
+		"WHERE owner = " + owner + " AND table_name = " + sqlString(table) +
+		" AND hidden_column = 'NO' AND virtual_column = 'NO' " +
+		"ORDER BY DECODE(identity_column, 'YES', 1, 0), column_id FETCH FIRST 1 ROW ONLY; " +
+		"EXECUTE IMMEDIATE " + sqlString("INSERT INTO "+tableRef+" (") + " || c || ') VALUES (DEFAULT)'; END;"
+}
+
+func (dialect) DeleteRowSQL(tableRef, where string) string {
+	return fmt.Sprintf("DELETE FROM %s WHERE %s", tableRef, where)
+}
+
+// ExactRow narrows the rows the original values match to one by its ROWID, so of
+// identical rows in a table without a primary key only one is changed or deleted
+// (hence Descriptor.LocatesRowWithoutPrimaryKey).
+func (dialect) ExactRow(tableRef, where string) (string, bool) {
+	return fmt.Sprintf("ROWID = (SELECT ROWID FROM %s WHERE %s FETCH FIRST 1 ROW ONLY)", tableRef, where), true
+}
+
+// sqlString is text as an Oracle string literal.
+func sqlString(text string) string {
+	return "'" + strings.ReplaceAll(text, "'", "''") + "'"
+}
