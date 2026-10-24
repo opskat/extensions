@@ -18,7 +18,7 @@ func importBinary(hex string) dbdriver.ImportValue {
 func TestIntegrationImportModes(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
 		s, schema, table := writeSession(t, target, "OPSKAT_IMP",
-			"ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(10 CHAR), BORN DATE, CODE RAW(8)")
+			"ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(20 CHAR), BORN DATE, CODE RAW(8)")
 		ctx := integrationContext(t)
 		run := func(req dbdriver.ImportRequest) *dbdriver.BatchResult {
 			statements, err := s.ImportStatements(ctx, schema, table, req)

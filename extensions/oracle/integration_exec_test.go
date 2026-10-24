@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,7 +64,8 @@ func TestIntegrationExecutePaged(t *testing.T) {
 			columns   []string
 			want      []string
 		}{
-			{"duplicate column names", "SELECT N, N FROM " + table + " ORDER BY N", dbdriver.Page{Index: 1, Size: 10}, 25, []string{"N", "N"}, numbers(11, 20)},
+			// ORDER BY 1: Oracle itself rejects ORDER BY N here as ambiguous (ORA-00960).
+			{"duplicate column names", "SELECT N, N FROM " + table + " ORDER BY 1", dbdriver.Page{Index: 1, Size: 10}, 25, []string{"N", "N"}, numbers(11, 20)},
 			{"FOR UPDATE", "SELECT N FROM " + table + " WHERE N <= 15 ORDER BY N FOR UPDATE", dbdriver.Page{Index: 1, Size: 10}, 15, []string{"N"}, numbers(11, 15)},
 			{"trailing comment", "SELECT N FROM " + table + " ORDER BY N -- the last page", dbdriver.Page{Index: 2, Size: 10}, 25, []string{"N"}, numbers(21, 25)},
 			{"own OFFSET / FETCH", "SELECT N FROM " + table + " ORDER BY N OFFSET 5 ROWS FETCH FIRST 12 ROWS ONLY", dbdriver.Page{Index: 1, Size: 10}, 12, []string{"N"}, numbers(16, 17)},
@@ -112,22 +113,62 @@ func TestIntegrationExecuteStatements(t *testing.T) {
 	})
 }
 
-// The asset's query timeout ending cancels the running statement and reports
-// the timeout; the session keeps working.
+// reachPath is the host's reach path for one driver instance: it dials directly
+// and keeps the connections, which the host closes when a call's context ends.
+type reachPath struct {
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (p *reachPath) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.conns = append(p.conns, c)
+	return c, nil
+}
+
+func (p *reachPath) close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.conns {
+		_ = c.Close()
+	}
+}
+
+// The asset's query timeout ending makes a running statement return, the way
+// the host does it: the guest runs every call with context.Background()
+// (sdkdbdriver serve), and the host, when the call's context ends, closes the
+// instance's connections, reports the timeout and discards the instance (opskat
+// pkg/extension driver_session.go). A deadline on the guest's own context is not
+// what stops it (23ai, unlike 19c, ignores go-ora's in-band break during
+// DBMS_SESSION.SLEEP). The driver returns once its connection is gone, and the
+// next instance logs in and works.
 func TestIntegrationExecuteTimeout(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
-		db := target.open(t, "")
+		reach := &reachPath{}
+		req := target.openRequest("")
+		req.Transport.Dial = reach.dial
+		db, _, err := open(integrationContext(t), req)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
 		s := sqldb.NewSession(db, dialect{})
+
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
+		stop := context.AfterFunc(ctx, reach.close)
+		defer stop()
 
 		start := time.Now()
-		_, err := s.Execute(ctx, "BEGIN DBMS_SESSION.SLEEP(30); END;")
+		_, err = s.Execute(context.Background(), "BEGIN DBMS_SESSION.SLEEP(30); END;")
 		require.Error(t, err)
 		assert.Less(t, time.Since(start), 15*time.Second)
-		assert.True(t, errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "ORA-01013"), "got %v", err)
+		assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "the statement failed before the timeout: %v", err)
 
-		res, err := s.Execute(integrationContext(t), "SELECT 1 FROM DUAL")
+		res, err := sqldb.NewSession(target.open(t, ""), dialect{}).Execute(integrationContext(t), "SELECT 1 FROM DUAL")
 		require.NoError(t, err)
 		assert.Equal(t, []string{"1"}, firstColumn(res.Rows))
 	})
