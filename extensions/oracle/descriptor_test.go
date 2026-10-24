@@ -37,6 +37,19 @@ func TestDescriptorClassifiesStatements(t *testing.T) {
 	assert.True(t, descriptor().Supports(dbdriver.CapClassifyStatements))
 }
 
+// Browsing the four object kinds and viewing a table's DDL are declared: the host
+// offers none of them, and the session refuses an undeclared object kind, without it.
+func TestDescriptorDeclaresBrowsing(t *testing.T) {
+	d := descriptor()
+	for _, c := range []dbdriver.Capability{
+		dbdriver.CapViewDDL, dbdriver.CapViews, dbdriver.CapProcedures, dbdriver.CapFunctions, dbdriver.CapTriggers,
+	} {
+		assert.True(t, d.Supports(c), "capability %q", c)
+	}
+	// The host's "database" is the schema: there is no schema level below it.
+	assert.False(t, d.Supports(dbdriver.CapSchemas))
+}
+
 func TestDriverOptionsRequireServiceName(t *testing.T) {
 	_, err := descriptor().CompleteDriverOptions(map[string]any{})
 	require.Error(t, err)
