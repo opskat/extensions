@@ -1,0 +1,19 @@
+{
+  "name": "jev-command-review",
+  "version": "0.1.0",
+  "minAppVersion": "1.14.1",
+  "hostABI": "2.6",
+  "backend": {
+    "runtime": "wasm",
+    "binary": "main.wasm"
+  },
+  "capabilities": {
+    "commandReview": true,
+    "http": {
+      "allowlist": [
+        "https://api.typesafe.ai/"
+      ]
+    },
+    "tunnel": true
+  }
+}

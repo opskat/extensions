@@ -1,3 +1,5 @@
+github.com/Pililink/opskat v1.3.1-0.20261026073342-36c20666d581 h1:0IN6BAqAUNPLmjDs+sL8p7eLbVJFJTsRNP0lCla2bMQ=
+github.com/Pililink/opskat v1.3.1-0.20261026073342-36c20666d581/go.mod h1:JbG5gKH0Mp+gQS9Hds9nQyDiB4dIrTimYaMaAGszouU=
 github.com/cago-frame/cago v0.0.0-20260926025905-604723c9e69d h1:nDBmhQO4RmxHSyLWPtzlbac3PMgZKrki9iEnOa0Faf0=
 github.com/cago-frame/cago v0.0.0-20260926025905-604723c9e69d/go.mod h1:OLDUyIuil1ATOw8ST5SCsbjumOCAbZQS/5nZ6XpgG0c=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
@@ -14,8 +16,6 @@ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
-github.com/opskat/opskat v1.14.1-0.20261023101603-dbb46b7a9133 h1:SpQrMZ94ejfVYq8jzVQMD6Du/VhdbPYoWLo19Bn1420=
-github.com/opskat/opskat v1.14.1-0.20261023101603-dbb46b7a9133/go.mod h1:JbG5gKH0Mp+gQS9Hds9nQyDiB4dIrTimYaMaAGszouU=
 github.com/pkg/diff v0.0.0-20210226163009-20ebb0f2a09e/go.mod h1:pJLUxLENpZxwdsKMEsNbx1VGcRFpLqf3715MtcvvzbA=
 github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
 github.com/rogpeppe/go-internal v1.15.0 h1:D0RCU5rMAp+SpgkiNdrjfJ+LX4J1M32V2NeCY7EJ6hc=
