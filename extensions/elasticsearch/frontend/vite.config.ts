@@ -51,7 +51,7 @@ function hostExternals(): Plugin {
 
     "@opskat/host-ui": [
       "const _h = window.__OPSKAT_EXT__.hostUI;",
-      "export const { version, CodeEditor, JsonTreeView, QueryResultTable } = _h;",
+      "export const { version, CodeEditor, JsonTreeView, DataTable } = _h;",
     ].join("\n"),
   };
 

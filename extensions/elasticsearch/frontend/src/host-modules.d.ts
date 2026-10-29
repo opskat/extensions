@@ -116,13 +116,21 @@ declare module "@opskat/host-ui" {
     className?: string;
   }>;
   export const JsonTreeView: ComponentType<{ data: unknown; className?: string }>;
-  export const QueryResultTable: ComponentType<{
+  export type SortDir = "asc" | "desc" | null;
+  export type CopyFormat = "tsv-data" | "tsv-fields" | "tsv-fields-data";
+  export const DataTable: ComponentType<{
     columns: string[];
     rows: Record<string, unknown>[];
     loading?: boolean;
     showRowNumber?: boolean;
     rowNumberOffset?: number;
     rowDensity?: "compact" | "default" | "comfortable";
+    /** Sorting is controlled by the page when onSortChange is given, local otherwise. */
+    sortColumn?: string | null;
+    sortDir?: SortDir;
+    onSortChange?: (column: string | null, dir: SortDir) => void;
+    /** Adds a "copy as" submenu to the context menu; the page performs the copy. */
+    onCopyAs?: (format: CopyFormat, ctx: { rowIdx: number; col: string; value: unknown }) => void;
     onSelectedCellChange?: (cell: { rowIdx: number; col: string } | null) => void;
     onSelectedRowsChange?: (rowIdxs: number[]) => void;
   }>;

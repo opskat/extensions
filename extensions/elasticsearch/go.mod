@@ -12,3 +12,5 @@ require (
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
 	github.com/smarty/assertions v1.15.0 // indirect
 )
+
+replace github.com/opskat/opskat => ../../../..

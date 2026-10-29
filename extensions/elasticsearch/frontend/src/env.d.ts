@@ -11,20 +11,14 @@ export interface HostI18n {
   addResourceBundle(lng: string, ns: string, resources: object, deep?: boolean, overwrite?: boolean): void;
 }
 
+/** The page API: calling a tool is the one entry point, canceling is its signal. */
 export interface ExtAPI {
   callTool(
     extName: string,
     tool: string,
     args: unknown,
     assetId?: number,
-    options?: { signal?: AbortSignal }
-  ): Promise<unknown>;
-  executeAction(
-    extName: string,
-    action: string,
-    args: unknown,
-    onEvent?: (e: { eventType: string; data: unknown }) => void,
-    assetId?: number
+    options?: { signal?: AbortSignal; onEvent?: (e: { eventType: string; data: unknown }) => void }
   ): Promise<unknown>;
 }
 

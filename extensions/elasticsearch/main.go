@@ -1,7 +1,7 @@
 // Command elasticsearch is OpsKat's Elasticsearch extension.
 //
 // The guest is a WASI reactor: the host runs _initialize and never calls main, so
-// every declaration happens in init(). manifest.json carries only the capability
+// every declaration happens in init(). manifest.json carries only the permission
 // grants; the host reads the rest back through describe().
 //
 // The extension never holds a secret. The asset's credentials are rendered and
@@ -51,7 +51,7 @@ func init() {
 	opskat.Tool("request", handleRequest).
 		RejectArgs(rejectRequest).
 		PolicyResources(requestActions, classifyRequest).
-		FileParam("body").
+		Large("body").
 		Doc("tools.request.description")
 	opskat.Tool("health", handleHealth).
 		Policy(actionRead).Resource(func(healthArgs) string { return "_cluster" }).
@@ -69,10 +69,10 @@ func init() {
 		PolicyResources([]string{actionRead}, classifySearch).
 		Doc("tools.search.description")
 
-	// The page keeps its console tabs per asset (console.go). Actions, not tools:
+	// The page keeps its console tabs per asset (console.go). Page-only tools:
 	// only the page calls them, and exec never lists them.
-	opskat.RegisterAction("console.load", handleConsoleLoad)
-	opskat.RegisterAction("console.save", handleConsoleSave)
+	opskat.Tool("console.load", handleConsoleLoad).PageOnly()
+	opskat.Tool("console.save", handleConsoleSave).PageOnly()
 
 	// Opening an asset shows the cluster page (frontend/, built into dist/frontend).
 	// The page calls the tools above; the host runs a page's calls directly, since

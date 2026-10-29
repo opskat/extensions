@@ -12,10 +12,10 @@ import (
 
 // The page's console tabs, saved per asset in the extension's KV store so that
 // reopening the asset brings them back. They are page state, not an operation on
-// the cluster, so they go through actions — which only the extension's own page
-// calls — rather than a tool, which AI and opsctl would see through exec.
+// the cluster, so they are page-only tools — only the extension's own page calls
+// them; AI and opsctl never see them through exec.
 //
-// The page names no asset in the arguments: the host scopes the action to the
+// The page names no asset in the arguments: the host scopes the call to the
 // page's asset (ctx.Asset), and that is the key.
 
 // savedConsole is one console tab: its number (its label) and its editor text.
@@ -24,7 +24,9 @@ type savedConsole struct {
 	Text   string `json:"text"`
 }
 
-// savedConsoles is both console.save's arguments and console.load's result.
+// savedConsoles is console.load's result and, as JSON text, console.save's
+// "consoles" argument: a tool parameter is a scalar or a list of strings, so the
+// nested tabs travel as text. The stored form is unchanged.
 type savedConsoles struct {
 	Consoles []savedConsole `json:"consoles"`
 }
@@ -36,7 +38,7 @@ func consoleKey(asset opskat.Asset) (string, error) {
 	return "console:" + strconv.FormatInt(asset.ID, 10), nil
 }
 
-// decodeStrict decodes an action's arguments, refusing unknown fields and
+// decodeStrict decodes the tabs a page sends, refusing unknown fields and
 // trailing data: the page is the only caller, so anything unexpected is a bug to
 // surface, not something to ignore.
 func decodeStrict(raw json.RawMessage, out any) error {
@@ -51,12 +53,15 @@ func decodeStrict(raw json.RawMessage, out any) error {
 	return nil
 }
 
-func handleConsoleLoad(ctx *opskat.ActionContext) (any, error) {
+type consoleLoadArgs struct{}
+
+type consoleSaveArgs struct {
+	Consoles string `json:"consoles" desc:"The console tabs as JSON text: [{\"number\":1,\"text\":\"...\"}]"`
+}
+
+func handleConsoleLoad(ctx *opskat.ToolContext, _ consoleLoadArgs) (any, error) {
 	key, err := consoleKey(ctx.Asset)
 	if err != nil {
-		return nil, err
-	}
-	if err := decodeStrict(ctx.Args, &struct{}{}); err != nil {
 		return nil, err
 	}
 	raw, err := opskat.KVGet(key)
@@ -73,26 +78,27 @@ func handleConsoleLoad(ctx *opskat.ActionContext) (any, error) {
 	return out, nil
 }
 
-func handleConsoleSave(ctx *opskat.ActionContext) (any, error) {
+func handleConsoleSave(ctx *opskat.ToolContext, args consoleSaveArgs) (any, error) {
 	key, err := consoleKey(ctx.Asset)
 	if err != nil {
 		return nil, err
 	}
-	var args struct {
-		Consoles *[]struct {
-			Number *int    `json:"number"`
-			Text   *string `json:"text"`
-		} `json:"consoles"`
-	}
-	if err := decodeStrict(ctx.Args, &args); err != nil {
-		return nil, err
-	}
-	if args.Consoles == nil {
+	if args.Consoles == "" {
 		return nil, errors.New("consoles is required")
 	}
-	state := savedConsoles{Consoles: make([]savedConsole, 0, len(*args.Consoles))}
+	var list *[]struct {
+		Number *int    `json:"number"`
+		Text   *string `json:"text"`
+	}
+	if err := decodeStrict(json.RawMessage(args.Consoles), &list); err != nil {
+		return nil, err
+	}
+	if list == nil {
+		return nil, errors.New("consoles must be a list")
+	}
+	state := savedConsoles{Consoles: make([]savedConsole, 0, len(*list))}
 	seen := map[int]bool{}
-	for i, c := range *args.Consoles {
+	for i, c := range *list {
 		if c.Number == nil || c.Text == nil {
 			return nil, fmt.Errorf("consoles[%d]: number and text are required", i)
 		}

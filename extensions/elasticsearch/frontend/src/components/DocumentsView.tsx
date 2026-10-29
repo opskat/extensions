@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { AlertCircle, ChevronLeft, ChevronRight, Info, Loader2, Play, SearchX, Table2, X } from "lucide-react";
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, cn } from "@opskat/ui";
-import { CodeEditor, JsonTreeView, QueryResultTable, type Monaco, type MonacoEditor } from "@opskat/host-ui";
+import { CodeEditor, DataTable, JsonTreeView, type Monaco, type MonacoEditor } from "@opskat/host-ui";
 import { bodyContext, suggest } from "../es/completion";
 import type { CompletionSource } from "../es/completionSource";
 import { documentColumns, documentRows } from "../es/documents";
@@ -290,7 +290,7 @@ function ResultArea({
 }) {
   switch (result.status) {
     case "loading":
-      return <QueryResultTable columns={[]} rows={[]} loading />;
+      return <DataTable columns={[]} rows={[]} loading />;
     case "invalid":
       return <QueryError title={t("page.docs.dslInvalid")} detail={result.reason} />;
     case "esError":
@@ -315,7 +315,7 @@ function ResultArea({
         );
       }
       return (
-        <QueryResultTable
+        <DataTable
           columns={columns}
           rows={rows}
           showRowNumber

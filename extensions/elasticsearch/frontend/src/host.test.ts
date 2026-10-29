@@ -3,25 +3,25 @@ import { loadConsoles, saveConsoles } from "./host";
 import type { SavedConsole } from "./es/tabs";
 
 /**
- * A host whose actions run concurrently, as the real one does (each IPC call on
+ * A host whose tool calls run concurrently, as the real one does (each IPC call on
  * its own goroutine, several WASM instances): console.save stores its consoles
  * only when the test lets it finish, console.load reads whatever is stored then.
  */
 function concurrentHost() {
   const stored = new Map<number, SavedConsole[]>();
   const pendingSaves: (() => void)[] = [];
-  const executeAction = vi.fn(
-    (_ext: string, action: string, args: { consoles?: SavedConsole[] }, _onEvent: unknown, assetId: number) => {
-      if (action === "console.load") return Promise.resolve({ consoles: stored.get(assetId) ?? [] });
-      return new Promise<unknown>((resolve) => {
-        pendingSaves.push(() => {
-          stored.set(assetId, args.consoles!);
-          resolve({});
-        });
+  const callTool = vi.fn((ext: string, tool: string, args: { consoles?: string }, assetId: number) => {
+    expect(ext).toBe("elasticsearch");
+    if (tool === "console.load") return Promise.resolve({ consoles: stored.get(assetId) ?? [] });
+    return new Promise<unknown>((resolve) => {
+      pendingSaves.push(() => {
+        // console.save takes the tabs as JSON text: a tool parameter is never a nested object.
+        stored.set(assetId, JSON.parse(args.consoles!));
+        resolve({});
       });
-    }
-  );
-  vi.stubGlobal("window", { __OPSKAT_EXT__: { api: { executeAction } } });
+    });
+  });
+  vi.stubGlobal("window", { __OPSKAT_EXT__: { api: { callTool } } });
   // Newest first: a host running calls concurrently may finish them in any order.
   const finishSaves = () => pendingSaves.splice(0).reverse().forEach((finish) => finish());
   return { stored, finishSaves };
@@ -66,10 +66,10 @@ describe("console persistence calls", () => {
   });
 
   it("still loads after an earlier save failed", async () => {
-    const executeAction = vi.fn((_ext: string, action: string) =>
-      action === "console.save" ? Promise.reject(new Error("kv full")) : Promise.resolve({ consoles: [] })
+    const callTool = vi.fn((_ext: string, tool: string) =>
+      tool === "console.save" ? Promise.reject(new Error("kv full")) : Promise.resolve({ consoles: [] })
     );
-    vi.stubGlobal("window", { __OPSKAT_EXT__: { api: { executeAction } } });
+    vi.stubGlobal("window", { __OPSKAT_EXT__: { api: { callTool } } });
     await expect(saveConsoles(5, [])).rejects.toThrow("kv full");
     await expect(loadConsoles(5)).resolves.toEqual([]);
   });
