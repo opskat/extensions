@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/opskat/opskat/pkg/extmanifest"
 )
 
 func envOf(vars map[string]string) func(string) string {
@@ -77,5 +80,19 @@ func TestKeygenOutputSignsVerifiably(t *testing.T) {
 	msg := []byte(`{"format":1,"extensions":[]}`)
 	if !ed25519.Verify(pub, msg, ed25519.Sign(priv, msg)) {
 		t.Fatal("keygen's public key does not verify its private key's signatures")
+	}
+}
+
+// check holds every source manifest to the host's parser: a hostABI 2.x source is
+// refused with the declared and supported versions.
+func TestCheckRefusesHostABI2xSource(t *testing.T) {
+	root := newRepo(t, map[string]string{"sample": "0.2.0"})
+	path := filepath.Join(root, "extensions", "sample", "manifest.json")
+	m := strings.Replace(string(readFile(t, path)), `"hostABI": "1.0"`, `"hostABI": "2.5"`, 1)
+	writeFile(t, root, "extensions/sample/manifest.json", m)
+	err := check(root)
+	var inc *extmanifest.IncompatibleError
+	if !errors.As(err, &inc) || inc.HostABI != "2.5" {
+		t.Fatalf("check error = %v, want *IncompatibleError for hostABI 2.5", err)
 	}
 }

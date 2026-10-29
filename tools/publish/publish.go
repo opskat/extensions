@@ -212,7 +212,8 @@ func (p *publisher) stage(ctx context.Context, src source, out string) (stagedRe
 			Version:       version,
 			HostABI:       meta.Manifest.HostABI,
 			MinAppVersion: meta.Manifest.MinAppVersion,
-			Capabilities:  meta.Manifest.Capabilities,
+			Permissions:   meta.Manifest.Permissions,
+			Contributes:   meta.Manifest.Contributes,
 			PublishedAt:   p.now().UTC().Truncate(time.Second),
 		},
 	}, nil

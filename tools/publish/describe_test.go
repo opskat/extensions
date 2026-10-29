@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -32,15 +33,15 @@ func TestDescribePackageMatchesWhatTheHostInstalls(t *testing.T) {
 	// What the app shows after installing the same zip.
 	mgr := extension.NewManager(t.TempDir(), func(string) extension.HostProvider {
 		return extension.NewDefaultHostProvider(extension.DefaultHostConfig{})
-	}, zap.NewNop())
+	}, newContributionRegistry(), zap.NewNop())
 	defer mgr.Close(ctx)
 	if _, err := mgr.Install(ctx, pkg); err != nil {
 		t.Fatal(err)
 	}
 	ext := mgr.GetExtension("sample")
 	for _, lang := range []string{"en", "zh-CN"} {
-		lm := ext.Manifest.Localized(func(key string) string { return ext.Translate(lang, key) })
-		want := extstore.Display{Name: lm.I18n.DisplayName, Description: lm.I18n.Description}
+
+		want := extstore.Display{Name: ext.Translate(lang, ext.Manifest.I18n.DisplayName), Description: ext.Translate(lang, ext.Manifest.I18n.Description)}
 		if got.Display[lang] != want {
 			t.Errorf("display[%s] = %+v, host shows %+v", lang, got.Display[lang], want)
 		}
@@ -48,8 +49,8 @@ func TestDescribePackageMatchesWhatTheHostInstalls(t *testing.T) {
 	if got.Icon != ext.Manifest.Icon {
 		t.Errorf("icon = %q, host shows %q", got.Icon, ext.Manifest.Icon)
 	}
-	if !reflect.DeepEqual(got.Manifest.Capabilities, ext.Manifest.Capabilities) {
-		t.Errorf("capabilities = %+v, host grants %+v", got.Manifest.Capabilities, ext.Manifest.Capabilities)
+	if !reflect.DeepEqual(got.Manifest.Permissions, ext.Manifest.Permissions) {
+		t.Errorf("permissions = %+v, host grants %+v", got.Manifest.Permissions, ext.Manifest.Permissions)
 	}
 
 	// And the values are the sample's, not empty agreement.
@@ -60,11 +61,11 @@ func TestDescribePackageMatchesWhatTheHostInstalls(t *testing.T) {
 		t.Errorf("en display / icon = %+v / %q", got.Display["en"], got.Icon)
 	}
 	m := got.Manifest
-	if m.Name != "sample" || m.Version != "0.2.0" || m.HostABI != "2.2" || m.MinAppVersion != "1.14.1" {
+	if m.Name != "sample" || m.Version != "0.2.0" || m.HostABI != "1.0" || m.MinAppVersion != "1.15.0" {
 		t.Errorf("manifest = %s %s hostABI %s minApp %s", m.Name, m.Version, m.HostABI, m.MinAppVersion)
 	}
-	if !reflect.DeepEqual(m.Capabilities.HTTP.Allowlist, []string{"https://example.com/"}) {
-		t.Errorf("http allowlist = %v", m.Capabilities.HTTP.Allowlist)
+	if !reflect.DeepEqual(m.Permissions.Network.HTTP, []string{"https://example.com/"}) {
+		t.Errorf("http allowlist = %v", m.Permissions.Network.HTTP)
 	}
 }
 
@@ -79,5 +80,39 @@ func TestDescribePackageRejectsWhatTheHostCannotLoad(t *testing.T) {
 	}
 	if _, err := describePackage(ctx, pkg); err == nil {
 		t.Fatal("describePackage accepted a package whose wasm cannot load")
+	}
+}
+
+// A package on a hostABI the host no longer supports, or in the old manifest
+// shape, never reaches the index: publishing must fail where the app would.
+func TestDescribePackageRefusesWhatTheHostRefuses(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]struct {
+		manifest string
+		want     string
+	}{
+		"nightly hostABI 2.x": {
+			manifest: strings.Replace(sampleManifest(t, "sample", "0.2.0"), `"hostABI": "1.0"`, `"hostABI": "2.5"`, 1),
+			want:     "hostABI 2.5",
+		},
+		"old shape under hostABI 1.0": {
+			manifest: strings.Replace(sampleManifest(t, "sample", "0.2.0"), `"permissions"`, `"capabilities"`, 1),
+			want:     "capabilities",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dist := t.TempDir()
+			writeFile(t, dist, "manifest.json", tc.manifest)
+			writeFile(t, dist, "main.wasm", string(readFile(t, sampleWasm)))
+			pkg := filepath.Join(t.TempDir(), "sample.zip")
+			if err := zipDir(dist, pkg); err != nil {
+				t.Fatal(err)
+			}
+			_, err := describePackage(ctx, pkg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("describePackage error = %v, want one naming %q", err, tc.want)
+			}
+		})
 	}
 }

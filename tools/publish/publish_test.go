@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opskat/opskat/pkg/extension"
+	"github.com/opskat/opskat/pkg/extmanifest"
 	"github.com/opskat/opskat/pkg/extstore"
 )
 
@@ -61,9 +61,9 @@ func TestPublishNewVersion(t *testing.T) {
 	sum := sha256.Sum256(pkg)
 	want := extstore.Version{
 		Version:       "0.2.0",
-		HostABI:       "2.2",
-		MinAppVersion: "1.14.1",
-		Capabilities:  extension.Capabilities{HTTP: extension.HTTPCapability{Allowlist: []string{"https://example.com/"}}},
+		HostABI:       "1.0",
+		MinAppVersion: "1.15.0",
+		Permissions:   extmanifest.Permissions{Network: extmanifest.NetworkPermission{HTTP: []string{"https://example.com/"}}},
 		Size:          int64(len(pkg)),
 		PublishedAt:   testClock,
 		Source:        extstore.Source{Type: extstore.SourceOCI, Ref: ref, SHA256: hex.EncodeToString(sum[:])},

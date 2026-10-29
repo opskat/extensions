@@ -1,4 +1,4 @@
-// Command sampledriver is the hostABI 2.5 database driver extension the
+// Command sampledriver is the hostABI 1.0 database driver extension the
 // publisher's tests package: a real WASM guest whose describe() declares one SQL
 // driver, so the grants the index lists come through the path the app takes. It
 // is never opened — packaging only runs describe().

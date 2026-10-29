@@ -7,12 +7,12 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/opskat/opskat/pkg/extension"
+	"github.com/opskat/opskat/pkg/extmanifest"
 )
 
-// A hostABI 2.5 database driver package is one the publisher can describe, and
+// A hostABI 1.0 database driver package is one the publisher can describe, and
 // its grants are what the index lists.
-func TestDescribePackageAcceptsHostABI25DatabaseDriver(t *testing.T) {
+func TestDescribePackageAcceptsHostABI10DatabaseDriver(t *testing.T) {
 	ctx := context.Background()
 	root := newRepo(t, nil)
 	addDriverExtension(t, root, "sampledriver")
@@ -30,21 +30,19 @@ func TestDescribePackageAcceptsHostABI25DatabaseDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Manifest.HostABI != "2.5" {
-		t.Errorf("hostABI = %s, want 2.5", got.Manifest.HostABI)
+	if got.Manifest.HostABI != "1.0" {
+		t.Errorf("hostABI = %s, want 1.0", got.Manifest.HostABI)
 	}
-	want := extension.Capabilities{
-		DatabaseDrivers:  []string{"sampledb"},
-		DatabaseKerberos: true,
-		Network:          extension.NetworkCapability{DatabaseRedirects: true},
+	want := extmanifest.Permissions{Kerberos: true, Network: extmanifest.NetworkPermission{AssetEndpoint: true, AssetRoute: true}}
+	if !reflect.DeepEqual(got.Manifest.Permissions, want) {
+		t.Errorf("permissions = %+v, want %+v", got.Manifest.Permissions, want)
 	}
-	if !reflect.DeepEqual(got.Manifest.Capabilities, want) {
-		t.Errorf("capabilities = %+v, want %+v", got.Manifest.Capabilities, want)
+	if !slices.Equal(got.Manifest.Contributes.DatabaseDrivers, []string{"sampledb"}) {
+		t.Errorf("databaseDrivers = %v", got.Manifest.Contributes.DatabaseDrivers)
 	}
 }
 
-// Publishing a database driver lists databaseDrivers / databaseKerberos /
-// databaseRedirects in its index entry and leaves an entry published earlier
+// Publishing a database driver lists permissions and databaseDrivers in its index entry and leaves an entry published earlier
 // (decoded) as it was.
 func TestPublishListsDatabaseDriverGrantsAndKeepsOtherEntries(t *testing.T) {
 	ctx := context.Background()
@@ -77,10 +75,11 @@ func TestPublishListsDatabaseDriverGrantsAndKeepsOtherEntries(t *testing.T) {
 		t.Fatalf("driver entry = %+v", driver)
 	}
 	v := driver.Versions[0]
-	if v.HostABI != "2.5" {
-		t.Errorf("hostABI = %s, want 2.5", v.HostABI)
+	if v.HostABI != "1.0" {
+		t.Errorf("hostABI = %s, want 1.0", v.HostABI)
 	}
-	if !slices.Equal(v.Capabilities.DatabaseDrivers, []string{"sampledb"}) || !v.Capabilities.DatabaseKerberos || !v.Capabilities.Network.DatabaseRedirects {
-		t.Errorf("capabilities = %+v", v.Capabilities)
+	if !slices.Equal(v.Contributes.DatabaseDrivers, []string{"sampledb"}) || !v.Permissions.Kerberos ||
+		!v.Permissions.Network.AssetEndpoint || !v.Permissions.Network.AssetRoute {
+		t.Errorf("permissions = %+v, contributes = %+v", v.Permissions, v.Contributes)
 	}
 }

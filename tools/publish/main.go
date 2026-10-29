@@ -17,7 +17,7 @@
 // the signing key is; publish does both, for a maintainer. Any failure exits
 // non-zero with index.json untouched.
 //
-// Index metadata (display strings, icon, capabilities, hostABI, minAppVersion) is
+// Index metadata (display strings, icon, permissions, contributes, hostABI, minAppVersion) is
 // read by loading each package through OpsKat's own extension loader, so the
 // store shows exactly what the app sees once the extension is installed.
 package main

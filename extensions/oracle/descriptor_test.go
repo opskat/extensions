@@ -7,6 +7,7 @@ import (
 
 	"github.com/opskat/opskat/pkg/dbdriver"
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
+	"github.com/opskat/opskat/pkg/extmanifest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,34 +57,24 @@ func TestDriverOptionsRole(t *testing.T) {
 	assert.Error(t, d.CheckDriverOptions(map[string]any{"use_sid": "yes"}))
 }
 
-// manifestContract is the part of manifest.json the host checks against what the
-// guest registers.
-type manifestContract struct {
-	Name         string `json:"name"`
-	HostABI      string `json:"hostABI"`
-	Capabilities struct {
-		DatabaseDrivers  []string `json:"databaseDrivers"`
-		DatabaseKerberos bool     `json:"databaseKerberos"`
-		Network          struct {
-			DatabaseRedirects bool `json:"databaseRedirects"`
-		} `json:"network"`
-	} `json:"capabilities"`
-}
-
 // The host refuses to load the extension when the manifest's drivers differ from
-// the registered ones, and refuses a Kerberos field group without the grant.
+// the registered ones, and refuses a Kerberos field group without the grant. The
+// manifest is read with the host's own strict parser, so a field the host does
+// not know fails here too.
 func TestManifestGrantsWhatTheDriverUses(t *testing.T) {
 	data, err := os.ReadFile("manifest.json")
 	require.NoError(t, err)
-	var m manifestContract
-	require.NoError(t, json.Unmarshal(data, &m))
+	m, err := extmanifest.Parse(data)
+	require.NoError(t, err)
 
 	d := descriptor()
-	assert.Equal(t, []string{string(d.ID)}, m.Capabilities.DatabaseDrivers)
-	assert.Equal(t, d.UsesField(dbdriver.FieldKerberos), m.Capabilities.DatabaseKerberos)
-	// go-ora follows listener redirects (shared server dispatchers, SCAN / RAC
-	// local listeners) and every dial goes through the asset's route.
-	assert.True(t, m.Capabilities.Network.DatabaseRedirects)
+	assert.Equal(t, []string{string(d.ID)}, m.Contributes.DatabaseDrivers)
+	assert.Equal(t, d.UsesField(dbdriver.FieldKerberos), m.Permissions.Kerberos)
+	// The driver dials the asset's own endpoint, and go-ora follows listener
+	// redirects (shared server dispatchers, SCAN / RAC local listeners), each
+	// dial going through the asset's route.
+	assert.True(t, m.Permissions.Network.AssetEndpoint)
+	assert.True(t, m.Permissions.Network.AssetRoute)
 }
 
 // Driver field labels and descriptions are locale keys the host resolves with the

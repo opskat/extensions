@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/opskat/opskat/pkg/extension"
+	"github.com/opskat/opskat/pkg/extmanifest"
 	"github.com/opskat/opskat/pkg/extstore"
 )
 
@@ -17,11 +17,11 @@ import (
 // parsed by the host's own parser so a manifest the app would refuse fails here.
 type source struct {
 	dir      string
-	manifest *extension.Manifest
+	manifest *extmanifest.Manifest
 }
 
 var (
-	// semverRe is the version shape extension.ParseManifest holds manifests to.
+	// semverRe is the version shape extmanifest.Parse holds manifests to.
 	semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	// repoNameRe is a registry repository path component (OCI distribution
 	// spec); an extension name is pushed as one.
@@ -60,7 +60,7 @@ func scanSources(root string) ([]source, error) {
 		if err != nil {
 			return nil, err
 		}
-		m, err := extension.ParseManifest(data)
+		m, err := extmanifest.Parse(data)
 		if err != nil {
 			return nil, fmt.Errorf("extensions/%s/manifest.json: %w", entry.Name(), err)
 		}

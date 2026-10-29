@@ -26,3 +26,5 @@ require (
 // go-ora v2.9.0 with the two patches it needs to build for GOOS=wasip1 (no
 // out-of-band break, no host IP lookup); github.com/opskat/go-ora, branch opskat-wasip1.
 replace github.com/sijms/go-ora/v2 => github.com/opskat/go-ora/v2 v2.9.1-opskat.1
+
+replace github.com/opskat/opskat => ../../../..

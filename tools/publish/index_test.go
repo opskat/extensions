@@ -13,7 +13,7 @@ import (
 func TestEncodeIndexIsDeterministic(t *testing.T) {
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	v := func(version string) extstore.Version {
-		return extstore.Version{Version: version, HostABI: "2.2", PublishedAt: at,
+		return extstore.Version{Version: version, HostABI: "1.0", PublishedAt: at,
 			Source: extstore.Source{Type: extstore.SourceOCI, Ref: "r:" + version, SHA256: "00"}}
 	}
 	shuffled := extstore.Index{Format: extstore.FormatVersion, Extensions: []extstore.Extension{

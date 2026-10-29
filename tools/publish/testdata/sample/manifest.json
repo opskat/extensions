@@ -1,13 +1,13 @@
 {
   "name": "sample",
   "version": "0.2.0",
-  "minAppVersion": "1.14.1",
-  "hostABI": "2.2",
+  "minAppVersion": "1.15.0",
+  "hostABI": "1.0",
   "backend": {
     "runtime": "wasm",
     "binary": "main.wasm"
   },
-  "capabilities": {
-    "http": { "allowlist": ["https://example.com/"] }
+  "permissions": {
+    "network": { "http": ["https://example.com/"] }
   }
 }

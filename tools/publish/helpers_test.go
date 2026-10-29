@@ -19,7 +19,7 @@ import (
 // that needs a real package copies it instead of compiling the guest again.
 var sampleWasm string
 
-// driverWasm is testdata/sampledriver, the hostABI 2.5 database driver guest.
+// driverWasm is testdata/sampledriver, the hostABI 1.0 database driver guest.
 var driverWasm string
 
 func TestMain(m *testing.M) {
@@ -188,7 +188,7 @@ func newPublisher(root string, key ed25519.PrivateKey, b *fakeBuilder, p *fakePu
 	}
 }
 
-// addDriverExtension writes extensions/<name> as a copy of the hostABI 2.5
+// addDriverExtension writes extensions/<name> as a copy of the hostABI 1.0
 // database driver fixture.
 func addDriverExtension(t *testing.T, root, name string) {
 	t.Helper()
