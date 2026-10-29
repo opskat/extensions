@@ -100,8 +100,8 @@ func newContributionRegistry() *extension.ContributionRegistry {
 // unzip, parse manifest.json, load the WASM, run describe() — and reads the
 // metadata back the way the extension settings show it. A package whose manifest,
 // describe() wire shape or driver ids the app would refuse fails here, before
-// anything is pushed; the app's per-contribution rules (wirePoint) are only
-// applied when the app loads it.
+// anything is pushed — the wire shape checked strictly (wirePoint); the app's own
+// per-contribution rules (internal/extreg) apply only when the app loads it.
 func describePackage(ctx context.Context, zipPath string) (packageMeta, error) {
 	dir, err := os.MkdirTemp("", "publish-stage-")
 	if err != nil {
