@@ -58,7 +58,7 @@ opsctl ext dev "$PWD/extensions/elasticsearch/dist"
    任务会让 PR 检查失败；本地用 `make index-check` 可得到同样的结果。
 2. **合并。** 推到 `main` 后，`package` 任务（`publish prepare`，不接触任何 Secret）对 manifest
    版本还不在 `index.json` 里的每个扩展，用 `make build` 构建 `dist/`，打成 zip（`manifest.json`
-   位于 zip 根），经 OpsKat 自己的扩展加载流程载入该 zip，读出应用将展示的显示名、说明、图标、能力、
+   位于 zip 根），经 OpsKat 自己的扩展加载流程载入该 zip，读出应用将展示的显示名、说明、图标、权限、
    `hostABI` 与 `minAppVersion`；随后 `publish` 任务（`publish release`，不运行任何扩展构建代码）
    把每个 zip 以单层 OCI 制品推到 `ghcr.io/opskat/extensions/<name>:<version>`，记录 sha256 与大小，
    签名 `index.json`，把 `index.json` 与 `index.json.sig` 提交回 `main`。这次提交带 `[skip ci]`，

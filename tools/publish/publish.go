@@ -133,6 +133,10 @@ func (p *publisher) release(ctx context.Context, dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	kept, err := loadPublishedEntries(filepath.Join(p.root, indexFile))
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(filepath.Join(dir, releasesFile)) //nolint:gosec // the staging directory we were given
 	if err != nil {
 		return nil, err
@@ -179,7 +183,7 @@ func (p *publisher) release(ctx context.Context, dir string) ([]string, error) {
 		addRelease(&idx, r)
 		published = append(published, r.name+":"+r.version.Version)
 	}
-	if err := p.writeIndex(idx); err != nil {
+	if err := p.writeIndex(idx, kept); err != nil {
 		return nil, err
 	}
 	return published, nil
@@ -244,10 +248,11 @@ func addRelease(idx *extstore.Index, r release) {
 	ext.Versions = append(ext.Versions, r.version)
 }
 
-// writeIndex encodes and signs idx and replaces index.json and index.json.sig.
-// Both are written to temporary files first, so a failure leaves the old pair.
-func (p *publisher) writeIndex(idx extstore.Index) error {
-	raw, err := encodeIndex(idx)
+// writeIndex encodes and signs idx and replaces index.json and index.json.sig,
+// keeping the versions published entries as they were published. Both are
+// written to temporary files first, so a failure leaves the old pair.
+func (p *publisher) writeIndex(idx extstore.Index, published publishedEntries) error {
+	raw, err := encodeIndex(idx, published)
 	if err != nil {
 		return err
 	}

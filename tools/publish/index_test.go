@@ -27,11 +27,11 @@ func TestEncodeIndexIsDeterministic(t *testing.T) {
 			Versions: []extstore.Version{v("0.9.0"), v("0.9.1"), v("0.10.0")}},
 	}}
 
-	a, err := encodeIndex(shuffled)
+	a, err := encodeIndex(shuffled, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := encodeIndex(sorted)
+	b, err := encodeIndex(sorted, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestEncodeIndexIsDeterministic(t *testing.T) {
 	}
 	// Re-encoding what was read back is byte-identical, so an unchanged index
 	// never produces a diff.
-	again, err := encodeIndex(parsed)
+	again, err := encodeIndex(parsed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

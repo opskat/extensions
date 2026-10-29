@@ -23,7 +23,7 @@ func writeIndex(t *testing.T, root string, published map[string][]string) {
 		}
 		idx.Extensions = append(idx.Extensions, ext)
 	}
-	raw, err := encodeIndex(idx)
+	raw, err := encodeIndex(idx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

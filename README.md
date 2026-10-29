@@ -19,7 +19,7 @@ extensions/<name>/
   go.mod          # its own Go module: github.com/opskat/extensions/<name>
   main.go ...     # the guest; registrations live in init()
   *_test.go       # unit tests, driven through opskat.TestHost
-  manifest.json   # name, version, hostABI, capability grants
+  manifest.json   # name, version, hostABI, permissions, database driver ids
   SKILL.md        # what the model reads about the extension (optional)
   locales/        # en.json, zh-CN.json
   frontend/       # page sources (optional)
@@ -69,7 +69,7 @@ the store.
    secrets) builds `dist/` with `make build` for every extension whose manifest
    version is not in `index.json` yet, zips it with `manifest.json` at the zip
    root, and loads the zip through OpsKat's own extension loader to read the
-   display name, description, icon, capabilities, `hostABI` and `minAppVersion`
+   display name, description, icon, permissions, `hostABI` and `minAppVersion`
    the app will show. The `publish` job (`publish release`), which runs no
    extension build code, then pushes each zip as a single-layer OCI artifact to
    `ghcr.io/opskat/extensions/<name>:<version>`, records its sha256 and size,
