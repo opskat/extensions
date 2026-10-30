@@ -3,7 +3,7 @@ module github.com/opskat/extensions/tools/publish
 go 1.26.0
 
 require (
-	github.com/opskat/opskat v1.14.1-0.20261023101603-dbb46b7a9133
+	github.com/opskat/opskat v1.14.1-0.20261030091249-ed28074019c5
 	go.uber.org/zap v1.28.0
 )
 
@@ -20,5 +20,3 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/opskat/opskat => ../../../..
