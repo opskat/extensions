@@ -1,8 +1,8 @@
 // Command jev-command-review 是 OpsKat 的命令审核扩展：把辅助审批 / Autopilot 下原本要问人的
 // 命令交给 TypeSafe 的 Jev 模型判断，只拦明确的危险（破坏数据、中断服务、下载并执行代码）。
 //
-// 宿主负责其余的一切：哪些命令送审、敏感信息替换、解码执行的展开、缓存、超时与重试、按权限
-// 模式落结果。这里只回答"这条命令危不危险"。API key 由宿主加密保存，扩展读不到明文：设置声明的
+// 宿主负责其余的一切：哪些命令送审、命令原样发来（不做任何替换）、解码执行的展开、缓存、
+// 超时与重试、按权限模式落结果。这里只回答"这条命令危不危险"。API key 由宿主加密保存，扩展读不到明文：设置声明的
 // auth 让宿主在发往服务地址时把它写进 Authorization 头，扩展自己不碰密钥。
 package main
 
@@ -84,7 +84,8 @@ func loadConfig(ctx *opskat.ToolContext) (config, bool) {
 	cfg.threshold = jevreview.DefaultThreshold
 	if v := str("threshold"); v != "" {
 		t, err := strconv.ParseFloat(v, 64)
-		if err != nil || t <= 0 || t >= 1 {
+		// 写成 !(t > 0 && t < 1)：NaN 与任何数比较都不成立，也落进这个分支。
+		if err != nil || !(t > 0 && t < 1) {
 			opskat.Log("warn", "threshold must be a number between 0 and 1: "+v)
 			return config{}, false
 		}

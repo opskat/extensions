@@ -103,6 +103,10 @@ func TestReviewWithoutUsableSettingsIsNotConfigured(t *testing.T) {
 		"阈值不是 0~1":   configured(map[string]any{"threshold": "1.5"}),
 		"阈值不是数":      configured(map[string]any{"threshold": "high"}),
 	}
+	// NaN、无穷和 0、1 及越界值都是设置错误：NaN 与任何分数比较都不成立，放行会让所有命令通过。
+	for _, v := range []string{"NaN", "nan", "Inf", "-inf", "+Inf", "0", "1", "-0.1", "1.5"} {
+		cases["阈值 "+v] = configured(map[string]any{"threshold": v})
+	}
 	for name, settings := range cases {
 		t.Run(name, func(t *testing.T) {
 			called := false
@@ -115,6 +119,19 @@ func TestReviewWithoutUsableSettingsIsNotConfigured(t *testing.T) {
 			assert.False(t, called)
 		})
 	}
+}
+
+// NaN 阈值不能让高分命令通过：设置错误就是设置错误，不发请求。
+func TestReviewNaNThresholdDoesNotPassDangerousCommands(t *testing.T) {
+	called := false
+	host := opskat.NewTestHost(configured(map[string]any{"threshold": "NaN"}),
+		opskat.WithMockHTTP(func(w http.ResponseWriter, _ *http.Request) { called = true; jevAnswer(t, w, allQuestions(0.99)) }))
+	defer host.Close()
+
+	out := reviewCommand(t, host, item)
+	assert.Equal(t, opskat.ReviewError, out.Outcome)
+	assert.Equal(t, "not_configured", out.Reason)
+	assert.False(t, called)
 }
 
 func TestReviewMapsServiceErrors(t *testing.T) {
