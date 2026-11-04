@@ -76,6 +76,53 @@
       ]
     },
     {
+      "name": "jev-command-review",
+      "display": {
+        "en": {
+          "name": "Jev Command Review",
+          "description": "Reviews commands with TypeSafe's Jev model under Assisted approval and Autopilot, stopping only clearly dangerous ones"
+        },
+        "zh-CN": {
+          "name": "Jev 命令审核",
+          "description": "在辅助审批和 Autopilot 下用 TypeSafe 的 Jev 模型审核命令，只拦明确危险的操作"
+        }
+      },
+      "icon": "shield",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "hostABI": "1.0",
+          "minAppVersion": "1.15.0",
+          "permissions": {
+            "fs": {
+              "read": null,
+              "write": null
+            },
+            "credentials": "",
+            "kerberos": false,
+            "network": {
+              "http": null,
+              "allowPrivate": false,
+              "assetEndpoint": false,
+              "assetRoute": false,
+              "settingsEndpoint": true
+            }
+          },
+          "contributes": {
+            "databaseDrivers": null,
+            "commandReviewer": true
+          },
+          "size": 3021728,
+          "publishedAt": "2026-11-04T02:58:31Z",
+          "source": {
+            "type": "oci",
+            "ref": "ghcr.io/opskat/extensions/jev-command-review:0.1.0",
+            "sha256": "b1b38778b09f16b62dd8dfdb38dd99246cf5aa49f81b8287280bb4c8ae6bb18c"
+          }
+        }
+      ]
+    },
+    {
       "name": "oracle",
       "display": {
         "en": {
