@@ -22,6 +22,10 @@ var sampleWasm string
 // driverWasm is testdata/sampledriver, the hostABI 1.0 database driver guest.
 var driverWasm string
 
+// reviewerWasm is testdata/samplereviewer, the hostABI 1.0 command reviewer guest
+// (settings and commandReviewer contributions).
+var reviewerWasm string
+
 func TestMain(m *testing.M) {
 	os.Exit(runTests(m))
 }
@@ -35,7 +39,8 @@ func runTests(m *testing.M) int {
 	defer os.RemoveAll(dir)
 	sampleWasm = filepath.Join(dir, "main.wasm")
 	driverWasm = filepath.Join(dir, "driver.wasm")
-	for out, guest := range map[string]string{sampleWasm: "sample", driverWasm: "sampledriver"} {
+	reviewerWasm = filepath.Join(dir, "reviewer.wasm")
+	for out, guest := range map[string]string{sampleWasm: "sample", driverWasm: "sampledriver", reviewerWasm: "samplereviewer"} {
 		build := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, ".")
 		build.Dir = filepath.Join("testdata", guest)
 		build.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
