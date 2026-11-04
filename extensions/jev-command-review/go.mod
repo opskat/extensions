@@ -3,7 +3,7 @@ module github.com/opskat/extensions/jev-command-review
 go 1.26.0
 
 require (
-	github.com/opskat/opskat v1.14.1-0.20261101044501-d2b9843fdb70
+	github.com/opskat/opskat v1.14.1-0.20261103153809-881d71d5a32a
 	github.com/stretchr/testify v1.12.1
 )
 
