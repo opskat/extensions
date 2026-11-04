@@ -28,7 +28,8 @@ extensions/<name>/
 ```
 
 Current extensions: [`elasticsearch`](./extensions/elasticsearch), [`oracle`](./extensions/oracle)
-(the Oracle Database driver of SQL database assets).
+(the Oracle Database driver of SQL database assets), [`jev-command-review`](./extensions/jev-command-review)
+(reviews AI-run commands with TypeSafe's Jev model).
 
 ## Build and test
 

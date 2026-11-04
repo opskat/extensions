@@ -1,0 +1,16 @@
+{
+  "name": "jev-command-review",
+  "version": "0.1.0",
+  "minAppVersion": "1.15.0",
+  "hostABI": "1.0",
+  "backend": {
+    "runtime": "wasm",
+    "binary": "main.wasm"
+  },
+  "permissions": {
+    "network": { "settingsEndpoint": true }
+  },
+  "contributes": {
+    "commandReviewer": true
+  }
+}
