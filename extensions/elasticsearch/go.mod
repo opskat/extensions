@@ -3,7 +3,7 @@ module github.com/opskat/extensions/elasticsearch
 go 1.26.0
 
 require (
-	github.com/opskat/opskat v1.14.1-0.20261030091249-ed28074019c5
+	github.com/opskat/opskat v1.15.0
 	github.com/smartystreets/goconvey v1.8.1
 )
 
