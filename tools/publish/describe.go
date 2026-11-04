@@ -93,6 +93,8 @@ func newContributionRegistry() *extension.ContributionRegistry {
 		wirePoint{extwire.KeySnippets, decodeInto[extwire.Snippets]},
 		wirePoint{extwire.KeyPages, decodeInto[extwire.Pages]},
 		wirePoint{extwire.KeyDatabaseDrivers, checkDrivers},
+		wirePoint{extwire.KeySettings, decodeInto[extwire.Settings]},
+		wirePoint{extwire.KeyCommandReviewer, decodeInto[extwire.CommandReviewer]},
 	)
 }
 

@@ -45,6 +45,37 @@ func TestDescribePackageReadsThePackageMetadata(t *testing.T) {
 	}
 }
 
+// A command reviewer package contributes settings and commandReviewer, the two
+// points the app registers for reviewers: describing it must accept both, as the
+// app's install does, so the reviewer reaches the index.
+func TestDescribePackageAcceptsACommandReviewer(t *testing.T) {
+	ctx := context.Background()
+	dist := t.TempDir()
+	writeFile(t, dist, "manifest.json", string(readFile(t, filepath.Join("testdata", "samplereviewer", "manifest.json"))))
+	writeFile(t, dist, "main.wasm", string(readFile(t, reviewerWasm)))
+	for _, lang := range []string{"en", "zh-CN"} {
+		rel := filepath.Join("locales", lang+".json")
+		writeFile(t, dist, rel, string(readFile(t, filepath.Join("testdata", "samplereviewer", rel))))
+	}
+	pkg := filepath.Join(t.TempDir(), "samplereviewer.zip")
+	if err := zipDir(dist, pkg); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := describePackage(ctx, pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := got.Manifest
+	if !m.Contributes.CommandReviewer || !m.Permissions.Network.SettingsEndpoint {
+		t.Errorf("manifest contributes.commandReviewer = %v, network.settingsEndpoint = %v",
+			m.Contributes.CommandReviewer, m.Permissions.Network.SettingsEndpoint)
+	}
+	if got.Display["en"].Name != "Sample reviewer" {
+		t.Errorf("en display = %+v", got.Display["en"])
+	}
+}
+
 func TestDescribePackageRejectsWhatTheHostCannotLoad(t *testing.T) {
 	ctx := context.Background()
 	dist := t.TempDir()
