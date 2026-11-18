@@ -1,6 +1,6 @@
 {
   "extension.displayName": "Oracle",
-  "extension.description": "Oracle Database (19c and later) driver for SQL database assets: browse schemas, run SQL and SQL files, edit tables, import and export",
+  "extension.description": "Oracle Database (19c and later) driver for SQL database assets: browse schemas, run SQL and SQL files, dump schemas and tables to SQL files, edit tables, import and export",
 
   "driver.serviceName.label": "Service name",
   "driver.serviceName.desc": "The database service to connect to, such as ORCLPDB1. With \"Connect by SID\" on, enter the SID here instead",

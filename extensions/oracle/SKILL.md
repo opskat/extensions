@@ -85,3 +85,20 @@ as they are. Between statements, the file's SQL*Plus commands are handled as fol
   variable stop the run before them (the statements before have run); such a file
   needs SQL*Plus. Put `SET DEFINE OFF` first when `&` is just text, as SQL Developer
   does.
+
+## Dumping SQL files
+
+"Dump SQL File" on a schema or on selected tables writes a file that runs in any
+user — it names neither the source schema nor any tablespace or storage:
+
+- the schema's own sequences (for selected tables, the ones their column defaults
+  use), starting at or past the source's current value;
+- each table's `CREATE TABLE` with its constraints, identity columns and comments,
+  then the indexes no constraint creates;
+- with data, one `INSERT` per row (no virtual columns); a `GENERATED ALWAYS`
+  identity column is `BY DEFAULT` while its rows go in, and every identity column
+  continues past the rows afterwards;
+- the foreign keys after all data: Oracle cannot turn foreign key checks off, so
+  "disable foreign key checks" is not offered;
+- with drop statements, PL/SQL blocks that drop the foreign keys, the tables and
+  the sequences and ignore the ones that do not exist, each ending in `/`.
