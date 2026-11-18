@@ -2,11 +2,11 @@
 
 > Status: Approved
 > Owner: OpsKat 维护者
-> Last updated: 2026-11-18（修订：sqldb 按行写语句的钩子；日期类取值统一显式格式）
+> Last updated: 2026-11-18（修订：sqldb 按行写语句的钩子；日期类取值统一显式格式；整库转储的视图取自 ListObjects）
 
 **Objective:** Oracle 扩展 0.3.0 在 OpsKat 里提供与内置驱动相同的「转储 SQL 文件」与「运行 SQL 文件」：把 Oracle 用户（schema）里的表、视图、序列、函数、过程、包、触发器与数据转储成一个能还原的 `.sql` 文件，并能在任意 Oracle 用户下运行这样的文件（以及 SQL Developer 导出的文件）。
 
-**Hard invariant:** 0.2.0 已有的连接、浏览、查询、编辑、建改删表、导入导出、语句分类行为不变，只有两处有意的变化：日期、时间戳、间隔值在「复制为 INSERT」「导出为 SQL」与表格编辑生成的语句里改为显式格式的转换函数（决定 11）；放不进一条字面量的 BLOB 行在这些地方写成 PL/SQL 块（决定 10）。**[用户决定]** 主仓库只改编进扩展 WASM 的共用 SQL 库 `pkg/dbdriver/sqldb`：新增一个可选的按行写语句钩子（决定 10），加在 opskat#382 的分支上；内置驱动行为不变、宿主 ABI 不变。其余只改 extensions 仓库的 `extensions/oracle`、发布工具的宿主依赖与发布元数据。
+**Hard invariant:** 0.2.0 已有的连接、浏览、查询、编辑、建改删表、导入导出、语句分类行为不变，只有两处有意的变化：日期、时间戳、间隔值在「复制为 INSERT」「导出为 SQL」与表格编辑生成的语句里改为显式格式的转换函数（决定 11）；放不进一条字面量的 BLOB 行在这些地方写成 PL/SQL 块（决定 10）。**[用户决定]** 主仓库只改编进扩展 WASM 的共用 SQL 库 `pkg/dbdriver/sqldb`：新增一个可选的按行写语句钩子（决定 10），加在 opskat#382 的分支上；另有一处宿主修正（决定 12）：整库转储的视图取自 `ListObjects` 的视图列表，不再只认 `ListTables` 里列出的。内置驱动行为不变、宿主 ABI 不变。其余只改 extensions 仓库的 `extensions/oracle`、发布工具的宿主依赖与发布元数据。
 
 ## 所处位置
 
@@ -42,6 +42,7 @@ opskat issue #368 的后续。主仓库 PR opskat/opskat#382（分支 `feat/sql-
 | 9 | **[用户决定]** 0.3.0 声明 `hostABI: "1.1"`、`minAppVersion` 为第一个含 opskat#382 的宿主版本；开发期依赖钉在 `feat/sql-dump-and-run` 的伪版本、用本地宿主验证；宿主发版后换成正式版本，再合并触发发布 | 旧版宿主装不上 1.1 的扩展，商店里在宿主发版前不能出现 0.3.0。Rejected: 做完就合并上架 |
 | 10 | **[用户决定]** 在 `pkg/dbdriver/sqldb` 加一个可选钩子：方言可以为某一行写出整条语句（包括 PL/SQL 块）代替默认的 INSERT；Oracle 用它把放不进字面量的 LOB 行写成「插入空 LOB 再分段 `DBMS_LOB.APPEND`」的块，以 `/` 结束 | [已核实] 行语句的形状由 sqldb 固定为 `INSERT … VALUES …;`（`pkg/dbdriver/sqldb/rows.go:131-135`），方言只能决定单个值的写法；CLOB 可用 `TO_CLOB` 拼接，BLOB 在 SQL 里不能拼接。sqldb 编进扩展的 WASM、不经宿主 ABI。Rejected: CLOB 拼接、大 BLOB 停下报错——不能还原 |
 | 11 | **[用户决定]** 日期、时间戳（含时区）、间隔值统一写成显式格式的 `TO_DATE` / `TO_TIMESTAMP` / `TO_TIMESTAMP_TZ` / `TO_DSINTERVAL` / `TO_YMINTERVAL`，转储、复制为 INSERT、导出为 SQL、表格编辑一致 | 文件在 SQL*Plus 等外部工具里导入也不依赖 NLS；同一种写法，不分叉。[已核实] 现在写成依赖会话 NLS 的字符串（`extensions/oracle/write.go:68-92`，NLS 在连接时设定 `connect.go:40`）。Rejected: 保持现有写法——文件离开 OpsKat 可能因 NLS 不同而导入失败 |
+| 12 | **[用户决定]** 整库转储的视图由宿主取自 `ListObjects` 的视图列表（opskat#382 上的宿主修正），Oracle 的 `ListTables` 仍只列表 | [已核实] 宿主 `planDump` 只把 `ListTables` 里同时出现在 `ListObjects.Views` 中的名字当作视图（opskat `pkg/dbdriver/dump.go:311-322`），Oracle 的 `ListTables` 只列表（`extensions/oracle/catalog.go:36-44`），整库转储因此没有视图。Rejected: Oracle 的 `ListTables` 也列出视图——树的「表」下会出现视图，违反浏览行为不变 |
 
 ## 能力声明
 
