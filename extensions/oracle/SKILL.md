@@ -100,5 +100,16 @@ user — it names neither the source schema nor any tablespace or storage:
   continues past the rows afterwards;
 - the foreign keys after all data: Oracle cannot turn foreign key checks off, so
   "disable foreign key checks" is not offered;
-- with drop statements, PL/SQL blocks that drop the foreign keys, the tables and
-  the sequences and ignore the ones that do not exist, each ending in `/`.
+- for a whole schema, its views (each a complete `CREATE OR REPLACE`), functions,
+  procedures and packages (spec, then body), ordered by `ALL_DEPENDENCIES` so
+  what an object uses comes first, each PL/SQL unit ending in a `/` line; names
+  written with a schema inside a view's query or a unit's body stay as written;
+  materialized views are left out;
+- for a whole schema, its triggers after all data, without the schema of their
+  table, each followed by `ALTER TRIGGER … ENABLE` or `DISABLE` as it was;
+- with drop statements, PL/SQL blocks that drop the foreign keys, the triggers,
+  views, procedures, packages and functions (in reverse dependency order), the
+  tables and the sequences and ignore the ones that do not exist, each ending in
+  `/`.
+
+A dump of selected tables has no functions, procedures, packages or triggers.

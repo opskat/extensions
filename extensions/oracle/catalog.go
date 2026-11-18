@@ -182,12 +182,19 @@ func (dialect) ObjectSource(ctx context.Context, conn *sql.Conn, database, objTy
 	if objType == dbdriver.ObjectView {
 		return objectDDL(ctx, conn, database, name, []string{"VIEW"}, "VIEW")
 	}
-	unit, isPackage := strings.CutSuffix(name, packageMarker)
+	unit, isPackage := packageUnit(name)
 	metadataType := metadataTypes[objType]
 	if isPackage {
 		metadataType = "PACKAGE"
 	}
-	return unitSource(ctx, conn, database, strings.TrimSpace(unit), sourceTypes[objType], metadataType)
+	return unitSource(ctx, conn, database, unit, sourceTypes[objType], metadataType)
+}
+
+// packageUnit gives the unit a procedure list name stands for, and whether it is
+// a package (the name ends in the package marker).
+func packageUnit(name string) (unit string, isPackage bool) {
+	unit, isPackage = strings.CutSuffix(name, packageMarker)
+	return strings.TrimSpace(unit), isPackage
 }
 
 // unitSource reads the unit's source from ALL_SOURCE. A unit the user cannot see,

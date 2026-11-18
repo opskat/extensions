@@ -8,6 +8,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,10 @@ const (
 	foreignKeysPattern     = `constraint_type = 'R'`
 	dumpColumnsPattern     = `virtual_column`
 	rowColumnsPattern      = `IS_NO_IDENTITY_OVERRIDE`
+	programMetadataPattern = `GET_DDL\(DECODE`
+	triggerMetadataPattern = `GET_DDL\('TRIGGER'`
+	dependenciesPattern    = `FROM all_dependencies`
+	mviewPattern           = `FROM all_mviews`
 )
 
 // dumpSource is the session as the dump orchestration reads it, with the listing,
@@ -42,14 +47,21 @@ const (
 // statements are the session's own (Oracle's literals over the mocked columns).
 type dumpSource struct {
 	*sqldb.Session
-	tables []string
-	rows   map[string]*sliceStream
+	tables  []string
+	objects dbdriver.DatabaseObjects
+	rows    map[string]*sliceStream
 }
 
 func (s dumpSource) ListTables(context.Context, string) ([]string, error) { return s.tables, nil }
 
 func (s dumpSource) ListObjects(context.Context, string) (*dbdriver.DatabaseObjects, error) {
-	return &dbdriver.DatabaseObjects{}, nil
+	return &s.objects, nil
+}
+
+// ObjectSource is what the host reads as a stored unit's definition: the
+// session's own, with the schema the dump must not write.
+func (s dumpSource) ObjectSource(_ context.Context, database, _, name, _ string) (string, error) {
+	return `CREATE OR REPLACE PROCEDURE "` + database + `"."` + name + `" AS BEGIN NULL; END;` + "\n/", nil
 }
 
 // TableDDL is what the host reads as a table's definition: DBMS_METADATA's, with
@@ -287,5 +299,145 @@ func TestDumpTableDiscardsAConnectionItCannotReset(t *testing.T) {
 		Database: "HR", Kind: dbdriver.DumpTable, Name: "EMP", Definition: `CREATE TABLE "HR"."EMP" ("ID" NUMBER)`,
 	})
 	require.ErrorContains(t, err, "ORA-03113")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+var (
+	dependencyColumns = []string{"REFERENCED_TYPE", "REFERENCED_NAME"}
+	triggerColumns    = []string{"DDL", "OWNER", "TABLE_OWNER", "TABLE_NAME"}
+)
+
+// DBMS_METADATA's DDL of the programs under the dump's transforms: no schema on
+// the unit's name, the rest as the user wrote it — a trigger's ON clause keeps
+// the schema it was typed with, and the trigger's state follows as an ALTER.
+const (
+	itemsDDL   = "\n  CREATE TABLE \"ITEMS\" (\"ID\" NUMBER PRIMARY KEY, \"PRICE\" NUMBER) \n  "
+	fTaxDDL    = "\n  CREATE OR REPLACE EDITIONABLE FUNCTION \"F_TAX\" (p NUMBER) RETURN NUMBER IS\nBEGIN\n  RETURN p * 0.1;\nEND;\n"
+	pkgSpecDDL = "\n  CREATE OR REPLACE EDITIONABLE PACKAGE \"UTIL_PKG\" AS\n  PROCEDURE log(msg VARCHAR2);\nEND util_pkg;\n"
+	pkgBodyDDL = "\n  CREATE OR REPLACE EDITIONABLE PACKAGE BODY \"UTIL_PKG\" AS\n  PROCEDURE log(msg VARCHAR2) IS BEGIN NULL; END;\nEND util_pkg;\n"
+	pRunDDL    = "\n  CREATE OR REPLACE EDITIONABLE PROCEDURE \"P_RUN\" AS\nBEGIN\n  util_pkg.log('run');\nEND;\n"
+	vItemsDDL  = "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"V_ITEMS\" (\"ID\", \"PRICE\", \"TAX\") AS \n  SELECT id, price, f_tax(price) tax FROM items\n"
+	vExpDDL    = "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"V_EXP\" (\"ID\", \"TAX\") AS \n  SELECT id, tax FROM v_items WHERE price > 10\n"
+	trgBiDDL   = "\n  CREATE OR REPLACE EDITIONABLE TRIGGER \"TRG_BI\" BEFORE INSERT ON HR.ITEMS FOR EACH ROW\nBEGIN\n" +
+		"  IF :new.id IS NULL THEN :new.id := item_seq.nextval; END IF;\n  INSERT INTO ref.audit_log VALUES ('ON HR.ITEMS');\nEND;\n" +
+		"ALTER TRIGGER \"TRG_BI\" ENABLE"
+	trgStmtDDL = "\n  CREATE OR REPLACE EDITIONABLE TRIGGER \"TRG_STMT\" after update on \"HR\".items\nbegin\n  null;\nend;\n" +
+		"ALTER TRIGGER \"TRG_STMT\" DISABLE"
+)
+
+// expectProgram answers DBMS_METADATA for a view or stored unit (a package's spec
+// and body) on a connection with the dump's transforms set and reset after, and
+// the dictionary's dependencies of it.
+func expectProgram(mock sqlmock.Sqlmock, name string, dependencies [][]any, ddl ...string) {
+	if strings.HasPrefix(name, "V_") {
+		mock.ExpectQuery(mviewPattern).WithArgs("HR", name).WillReturnRows(names("N", "0"))
+	}
+	mock.ExpectExec(setTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(programMetadataPattern).WithArgs("HR", name).WillReturnRows(names("DDL", ddl...))
+	mock.ExpectExec(resetTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(dependenciesPattern).WithArgs("HR", name).WillReturnRows(rowsOf(dependencyColumns, dependencies...))
+}
+
+func expectTrigger(mock sqlmock.Sqlmock, name, ddl string) {
+	mock.ExpectExec(setTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(triggerMetadataPattern).WithArgs("HR", name).WillReturnRows(rowsOf(triggerColumns, []any{ddl, "HR", "HR", "ITEMS"}))
+	mock.ExpectExec(resetTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
+}
+
+// A whole schema with its programs: views, functions, procedures and packages
+// without the schema, ordered by the dictionary's dependencies (a package before
+// the procedure calling it, a function before the views using it, a view before
+// the view on it), a package's spec before its body, each PL/SQL unit ending in
+// /; the triggers after all data, without the schema of their table, keeping
+// their state; the drop section drops them all in reverse, ignoring "does not
+// exist". The views are the ones ListObjects lists (Oracle's ListTables lists
+// tables only); a materialized view among them is left out.
+func TestDumpProgramsGolden(t *testing.T) {
+	session, mock := newDumpMock(t)
+	mock.ExpectQuery(sequencesPattern).WithArgs("HR").WillReturnRows(rowsOf(sequenceColumns,
+		[]any{"ITEM_SEQ", "1", "9999999999999999999999999999", "1", "N", "N", "20", "1"}))
+	expectTableMetadata(mock, "ITEMS", itemsDDL)
+	mock.ExpectQuery(sequenceUsersPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(defaultColumns))
+	mock.ExpectQuery(commentsPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(commentColumns))
+	mock.ExpectQuery(foreignKeysPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(foreignKeyColumns))
+	mock.ExpectQuery(dumpColumnsPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(dumpColumnColumns,
+		[]any{"ID", "NO", nil, "NO"}, []any{"PRICE", "NO", nil, "NO"}))
+	mock.ExpectQuery(rowColumnsPattern).WithArgs("HR", "ITEMS").WillReturnRows(columnRows().
+		AddRow("ID", "NUMBER", "NO", nil, nil, 0, 0, 0).
+		AddRow("PRICE", "NUMBER", "YES", nil, nil, 0, 0, 0))
+
+	expectProgram(mock, "F_TAX", nil, fTaxDDL)
+	expectProgram(mock, "P_RUN", [][]any{{"PACKAGE", "UTIL_PKG"}}, pRunDDL)
+	// The body depends on its own spec.
+	expectProgram(mock, "UTIL_PKG", [][]any{{"PACKAGE", "UTIL_PKG"}}, pkgSpecDDL, pkgBodyDDL)
+	expectProgram(mock, "V_EXP", [][]any{{"FUNCTION", "F_TAX"}, {"VIEW", "V_ITEMS"}}, vExpDDL)
+	expectProgram(mock, "V_ITEMS", [][]any{{"FUNCTION", "F_TAX"}}, vItemsDDL)
+	mock.ExpectQuery(mviewPattern).WithArgs("HR", "ITEMS_MV").WillReturnRows(names("N", "1"))
+	expectTrigger(mock, "TRG_BI", trgBiDDL)
+	expectTrigger(mock, "TRG_STMT", trgStmtDDL)
+
+	source := dumpSource{
+		Session: session, tables: []string{"ITEMS"},
+		objects: dbdriver.DatabaseObjects{
+			Views: []dbdriver.ObjectMeta{
+				{Name: "ITEMS_MV", Type: dbdriver.ObjectView}, {Name: "V_EXP", Type: dbdriver.ObjectView}, {Name: "V_ITEMS", Type: dbdriver.ObjectView},
+			},
+			Procedures: []dbdriver.ObjectMeta{
+				{Name: "P_RUN", Type: dbdriver.ObjectProcedure}, {Name: "UTIL_PKG (package)", Type: dbdriver.ObjectProcedure},
+			},
+			Functions: []dbdriver.ObjectMeta{{Name: "F_TAX", Type: dbdriver.ObjectFunction}},
+			Triggers: []dbdriver.ObjectMeta{
+				{Name: "TRG_BI", Type: dbdriver.ObjectTrigger}, {Name: "TRG_STMT", Type: dbdriver.ObjectTrigger},
+			},
+		},
+		rows: map[string]*sliceStream{"ITEMS": {columns: []string{"ID", "PRICE"}, rows: [][]any{{"1", "12.5"}}}},
+	}
+	got := runDump(t, session, source, dbdriver.DumpRequest{
+		Database: "HR", Whole: true, WithData: true,
+		Options: dbdriver.DumpOptions{Views: true, Routines: true, Triggers: true, Drops: true},
+	})
+	dumpGolden(t, "programs/dump_schema.sql", got)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A trigger's ON clause loses the schema only where it names the trigger's
+// table in the trigger's own schema, however the name was typed; nothing after
+// the clause is rewritten.
+func TestTriggerWithoutTableSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, owner, tableOwner, table, want string
+	}{
+		{"unquoted", `TRIGGER "T" BEFORE INSERT ON HR.ITEMS FOR EACH ROW`, "HR", "HR", "ITEMS",
+			`TRIGGER "T" BEFORE INSERT ON ITEMS FOR EACH ROW`},
+		{"lower case and quoted", `trigger "T" after update on "HR" . items`, "HR", "HR", "ITEMS", `trigger "T" after update on items`},
+		{"quoted mixed case", `TRIGGER "T" AFTER DELETE ON "Hr"."Items"`, "Hr", "Hr", "Items", `TRIGGER "T" AFTER DELETE ON "Items"`},
+		{"unquoted is not the mixed case schema", `TRIGGER "T" AFTER DELETE ON HR.ITEMS`, "Hr", "Hr", "ITEMS",
+			`TRIGGER "T" AFTER DELETE ON HR.ITEMS`},
+		{"column named like the keyword", `TRIGGER "T" BEFORE UPDATE OF ON_HAND ON HR.ITEMS`, "HR", "HR", "ITEMS",
+			`TRIGGER "T" BEFORE UPDATE OF ON_HAND ON ITEMS`},
+		{"another schema's table", `TRIGGER "T" BEFORE INSERT ON REF.ITEMS`, "HR", "REF", "ITEMS", `TRIGGER "T" BEFORE INSERT ON REF.ITEMS`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "\nBEGIN\n  DELETE FROM hr.items WHERE 1 = 0; -- ON HR.ITEMS\nEND;"
+			assert.Equal(t, tc.want+body, triggerWithoutTableSchema(tc.header+body, tc.owner, tc.tableOwner, tc.table))
+		})
+	}
+}
+
+// DBMS_METADATA writes a trigger's state as an ALTER after it; a trigger DDL
+// without one is not taken for an enabled trigger.
+func TestTriggerDDLWithoutItsStateIsAnError(t *testing.T) {
+	session, mock := newMockSession(t)
+	mock.ExpectExec(setTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(triggerMetadataPattern).WithArgs("HR", "TRG").
+		WillReturnRows(rowsOf(triggerColumns, []any{`CREATE OR REPLACE TRIGGER "TRG" BEFORE INSERT ON ITEMS BEGIN NULL; END;`, "HR", "HR", "ITEMS"}))
+	mock.ExpectExec(resetTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	dialect, err := session.(*sqldb.Session).DumpDialect()
+	require.NoError(t, err)
+	_, err = dialect.DumpObject(context.Background(), dbdriver.DumpObject{
+		Database: "HR", Kind: dbdriver.ObjectTrigger, Name: "TRG", Definition: `CREATE OR REPLACE TRIGGER TRG BEFORE INSERT ON ITEMS BEGIN NULL; END;`,
+	})
+	require.ErrorContains(t, err, "state")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

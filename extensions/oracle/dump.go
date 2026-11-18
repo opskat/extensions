@@ -37,6 +37,8 @@ const (
 	oraTableMissing      = 942  // ORA-00942: table or view does not exist
 	oraSequenceMissing   = 2289 // ORA-02289: sequence does not exist
 	oraConstraintMissing = 2443 // ORA-02443: Cannot drop constraint - nonexistent constraint
+	oraObjectMissing     = 4043 // ORA-04043: object does not exist (function, procedure, package)
+	oraTriggerMissing    = 4080 // ORA-04080: trigger does not exist
 )
 
 // dropBlock runs statement and ignores the Oracle errors missing (their positive
@@ -174,14 +176,15 @@ func sequencesUsed(ctx context.Context, conn *sql.Conn, schema string, tables []
 	return used, nil
 }
 
-// DumpObject writes a table as the dump needs it; views, functions, procedures
-// and triggers keep the session's default for now.
+// DumpObject writes each kind of object as the dump needs it.
 func (dialect) DumpObject(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject, script *dbdriver.DumpObjectScript) error {
-	switch object.Kind {
-	case dbdriver.DumpTable:
+	if object.Kind == dbdriver.DumpTable {
 		return dumpTable(ctx, conn, object, script)
 	}
-	return nil
+	if object.Kind == dbdriver.ObjectTrigger {
+		return dumpTrigger(ctx, conn, object, script)
+	}
+	return dumpProgram(ctx, conn, object, script)
 }
 
 // dumpTable writes a table without its schema or storage: the CREATE TABLE with
@@ -484,4 +487,187 @@ func dumpColumns(ctx context.Context, conn *sql.Conn, schema, table string) ([]d
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// program is how a view or stored unit is read and dropped: the ALL_OBJECTS
+// types it is made of (a package's spec sorts before its body), the keyword
+// dropping it and the error saying it is not there.
+type program struct {
+	objectTypes []string
+	drop        string
+	missing     int
+}
+
+var programs = map[string]program{
+	dbdriver.ObjectView:      {[]string{"VIEW"}, "VIEW", oraTableMissing},
+	dbdriver.ObjectFunction:  {[]string{"FUNCTION"}, "FUNCTION", oraObjectMissing},
+	dbdriver.ObjectProcedure: {[]string{"PROCEDURE"}, "PROCEDURE", oraObjectMissing},
+}
+
+// packageProgram is a package, listed among the procedures: DROP PACKAGE drops
+// its body too.
+var packageProgram = program{[]string{"PACKAGE", "PACKAGE BODY"}, "PACKAGE", oraObjectMissing}
+
+// programDDLQuery gives the DDL of each part of a view or stored unit, in
+// object type order; the IN list is the program's object types.
+const programDDLQuery = "SELECT DBMS_METADATA.GET_DDL(DECODE(o.object_type, 'PACKAGE', 'PACKAGE_SPEC', " +
+	"'PACKAGE BODY', 'PACKAGE_BODY', o.object_type), o.object_name, o.owner) AS DDL FROM all_objects o " +
+	"WHERE o.owner = " + ownerIs + " AND o.object_name = :2 AND o.object_type IN (%s) ORDER BY o.object_type"
+
+// dumpProgram writes a view, function, procedure or package without its schema,
+// as DBMS_METADATA gives it: a view's complete CREATE OR REPLACE, each PL/SQL
+// unit (a package's spec, then its body) ending in a "/" line. Names written
+// with a schema inside a view's query or a unit's body stay as written. Its
+// dependencies on the schema's views, functions, procedures and packages order
+// it after them. A materialized view, listed with the views, is left out.
+func dumpProgram(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject, script *dbdriver.DumpObjectScript) error {
+	if object.Kind == dbdriver.ObjectView {
+		mview, err := isMaterializedView(ctx, conn, object.Database, object.Name)
+		if err != nil {
+			return sqldb.Wrap("materialized views", err)
+		}
+		if mview { // not dumped: its query, refresh and container table are out of scope
+			script.Drop, script.Definition = nil, nil
+			return nil
+		}
+	}
+	unit, isPackage := packageUnit(object.Name)
+	p := programs[object.Kind]
+	if isPackage {
+		p = packageProgram
+	}
+	var parts []string
+	if err := withDumpTransforms(ctx, conn, func() error {
+		var err error
+		parts, err = sqldb.QueryNames(ctx, conn, fmt.Sprintf(programDDLQuery, quotedList(p.objectTypes)), object.Database, unit)
+		return err
+	}); err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("%s %s is no longer in the schema", object.Kind, object.Name)
+	}
+	dependencies, err := programDependencies(ctx, conn, object.Database, unit, p.objectTypes)
+	if err != nil {
+		return sqldb.Wrap("dependencies", err)
+	}
+	script.Drop = []string{dropBlock("DROP "+p.drop+" "+quoteIdent(unit), p.missing)}
+	script.Definition = make([]string, len(parts))
+	for i, ddl := range parts {
+		if object.Kind == dbdriver.ObjectView {
+			script.Definition[i] = sqldb.TerminateStatement(strings.TrimSpace(ddl))
+		} else {
+			script.Definition[i] = plsqlUnit(ddl)
+		}
+	}
+	script.Dependencies = dependencies
+	return nil
+}
+
+// isMaterializedView reports whether a name the views list (ListObjects lists
+// materialized views with them) is a materialized view.
+func isMaterializedView(ctx context.Context, conn *sql.Conn, schema, name string) (bool, error) {
+	var n int
+	err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM all_mviews WHERE owner = "+ownerIs+" AND mview_name = :2", schema, name).Scan(&n)
+	return n > 0, err
+}
+
+// plsqlUnit ends a PL/SQL unit's DDL with a "/" line.
+func plsqlUnit(ddl string) string {
+	return strings.TrimSpace(ddl) + "\n/"
+}
+
+// dependenciesQuery lists the views, functions, procedures and packages of its
+// own schema a unit of the IN list's types uses (a package body its own spec
+// too, which the host does not count).
+const dependenciesQuery = "SELECT d.referenced_type, d.referenced_name FROM all_dependencies d " +
+	"WHERE d.owner = " + ownerIs + " AND d.name = :2 AND d.type IN (%s) AND d.referenced_owner = d.owner " +
+	"AND d.referenced_type IN ('VIEW', 'FUNCTION', 'PROCEDURE', 'PACKAGE') ORDER BY d.referenced_type, d.referenced_name"
+
+// dependencyKinds are the dump kinds of the dictionary's referenced types; a
+// package is listed among the procedures, by its name with the package marker.
+var dependencyKinds = map[string]string{
+	"VIEW": dbdriver.ObjectView, "FUNCTION": dbdriver.ObjectFunction,
+	"PROCEDURE": dbdriver.ObjectProcedure, "PACKAGE": dbdriver.ObjectProcedure,
+}
+
+func programDependencies(ctx context.Context, conn *sql.Conn, schema, unit string, objectTypes []string) ([]dbdriver.DumpDependency, error) {
+	rows, err := conn.QueryContext(ctx, fmt.Sprintf(dependenciesQuery, quotedList(objectTypes)), schema, unit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []dbdriver.DumpDependency
+	for rows.Next() {
+		var typ, name string
+		if err := rows.Scan(&typ, &name); err != nil {
+			return nil, err
+		}
+		if typ == "PACKAGE" {
+			name += " " + packageMarker
+		}
+		out = append(out, dbdriver.DumpDependency{Kind: dependencyKinds[typ], Name: name})
+	}
+	return out, rows.Err()
+}
+
+// triggerDDLQuery gives a trigger's DDL, its schema as Oracle spells it and the
+// table it is on.
+const triggerDDLQuery = "SELECT DBMS_METADATA.GET_DDL('TRIGGER', t.trigger_name, t.owner) AS DDL, t.owner, t.table_owner, t.table_name " +
+	"FROM all_triggers t WHERE t.owner = " + ownerIs + " AND t.trigger_name = :2"
+
+// triggerState is the ALTER TRIGGER … ENABLE / DISABLE DBMS_METADATA writes
+// after a trigger's CREATE.
+var triggerState = regexp.MustCompile(`(?s)^(.*?)\s*ALTER TRIGGER ("(?:[^"]|"")+") (ENABLE|DISABLE)\s*$`)
+
+// dumpTrigger writes a trigger (the host puts it after all data) without its
+// schema or its table's, a "/" line after it, then its state, enabled or
+// disabled, as an ALTER TRIGGER.
+func dumpTrigger(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject, script *dbdriver.DumpObjectScript) error {
+	var ddl, owner, tableOwner, table string
+	if err := withDumpTransforms(ctx, conn, func() error {
+		return conn.QueryRowContext(ctx, triggerDDLQuery, object.Database, object.Name).Scan(&ddl, &owner, &tableOwner, &table)
+	}); err != nil {
+		return err
+	}
+	state := triggerState.FindStringSubmatch(strings.TrimSpace(ddl))
+	if state == nil {
+		return fmt.Errorf("DBMS_METADATA gave trigger %s without its state", object.Name)
+	}
+	script.Drop = []string{dropBlock("DROP TRIGGER "+quoteIdent(object.Name), oraTriggerMissing)}
+	script.Definition = []string{
+		plsqlUnit(triggerWithoutTableSchema(state[1], owner, tableOwner, table)),
+		"ALTER TRIGGER " + state[2] + " " + state[3] + ";",
+	}
+	return nil
+}
+
+// triggerWithoutTableSchema drops the schema from the ON clause of a trigger's
+// DDL when it names the trigger's table in the trigger's own schema (owner), as
+// the user typed it: quoted, or unquoted in any case. Only the clause is
+// rewritten — the first ON naming the table, before the body — and a table of
+// another schema keeps its schema.
+func triggerWithoutTableSchema(ddl, owner, tableOwner, table string) string {
+	if tableOwner != owner {
+		return ddl
+	}
+	clause := regexp.MustCompile(`(?i:\bON)(\s+)` + identPattern(owner) + `\s*\.\s*(` + identPattern(table) + `)`)
+	at := clause.FindStringSubmatchIndex(ddl)
+	if at == nil {
+		return ddl
+	}
+	return ddl[:at[0]] + ddl[at[0]:at[2]] + ddl[at[2]:at[3]] + ddl[at[4]:at[5]] + ddl[at[1]:]
+}
+
+// unquotedName is an identifier Oracle takes unquoted, in any case.
+var unquotedName = regexp.MustCompile(`^[A-Z][A-Z0-9_$#]*$`)
+
+// identPattern matches name written quoted, or unquoted in any case when Oracle
+// would read it so, not followed by more of an identifier.
+func identPattern(name string) string {
+	quoted := regexp.QuoteMeta(quoteIdent(name))
+	if !unquotedName.MatchString(name) {
+		return quoted
+	}
+	return `(?:` + quoted + `|(?i:` + regexp.QuoteMeta(name) + `)\b)`
 }
