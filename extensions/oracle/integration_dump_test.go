@@ -82,15 +82,23 @@ func createDumpUser(t *testing.T, admin *sql.DB, target oracleTarget, name strin
 }
 
 // dumpFixture is a schema with what a table dump covers: user sequences (one
-// descending, ordered, uncached and cycling), an identity column GENERATED
-// ALWAYS with its own options, a column defaulting to a sequence, a virtual
+// descending, ordered, uncached and cycling; one used up and one cycled past its
+// end, whose LAST_NUMBER lies past MAXVALUE), an identity column GENERATED
+// ALWAYS with its own options (and one of an empty table), a column defaulting
+// to a sequence, a virtual
 // column, primary key, unique and check constraints, a unique function-based and
 // a descending index, a foreign key into the schema with ON DELETE CASCADE and a
-// deferred self-reference, comments (one in Chinese, on GBK 19c too) and rows.
+// deferred self-reference, comments (one in Chinese, on GBK 19c too) and rows
+// (one with an &).
 var dumpFixture = []string{
 	"CREATE SEQUENCE EMP_SEQ START WITH 100 INCREMENT BY 5 MAXVALUE 100000 CACHE 7 CYCLE",
 	"CREATE SEQUENCE AUDIT_SEQ START WITH -1 INCREMENT BY -1 MINVALUE -1000 MAXVALUE -1 NOCACHE ORDER",
 	"SELECT EMP_SEQ.NEXTVAL FROM dual",
+	"CREATE SEQUENCE USED_SEQ MAXVALUE 3 NOCACHE",
+	"SELECT USED_SEQ.NEXTVAL FROM dual", "SELECT USED_SEQ.NEXTVAL FROM dual", "SELECT USED_SEQ.NEXTVAL FROM dual",
+	"CREATE SEQUENCE CYCLE_SEQ MAXVALUE 3 CYCLE CACHE 2",
+	"SELECT CYCLE_SEQ.NEXTVAL FROM dual", "SELECT CYCLE_SEQ.NEXTVAL FROM dual", "SELECT CYCLE_SEQ.NEXTVAL FROM dual",
+	"CREATE TABLE NOTE (ID NUMBER GENERATED ALWAYS AS IDENTITY (START WITH 500) PRIMARY KEY, TXT VARCHAR2(10))",
 	"CREATE TABLE DEPT (ID NUMBER GENERATED ALWAYS AS IDENTITY (START WITH 10 INCREMENT BY 2 CACHE 5) PRIMARY KEY, " +
 		"NAME VARCHAR2(30 CHAR) NOT NULL, CODE CHAR(4) CONSTRAINT DEPT_CODE_UK UNIQUE)",
 	"COMMENT ON TABLE DEPT IS '部门'",
@@ -103,6 +111,7 @@ var dumpFixture = []string{
 	"CREATE INDEX EMP_DEPT_IX ON EMP (DEPT_ID, SALARY DESC)",
 	"INSERT INTO DEPT (NAME, CODE) VALUES ('Sales', 'S01')",
 	"INSERT INTO DEPT (NAME, CODE) VALUES ('O''Brien & Co', NULL)",
+	"INSERT INTO DEPT (NAME, CODE) VALUES ('AT&T', 'A01')",
 	"INSERT INTO EMP (DEPT_ID, EMAIL, SALARY, MGR_ID) VALUES (10, 'a@example.com', 1000.5, NULL)",
 	"INSERT INTO EMP (DEPT_ID, EMAIL, SALARY, MGR_ID) VALUES (12, 'b@example.com', 20, 105)",
 }
@@ -259,6 +268,17 @@ func TestIntegrationDumpTablesRoundTrip(t *testing.T) {
 			assert.Equal(t, strings.Split(sequences[i], "|")[0], name)
 			assert.GreaterOrEqual(t, mustInt(t, restoredNext), mustInt(t, sourceNext), name)
 		}
+		// A sequence past its end is used up as the original is, or starts over
+		// when it cycles.
+		var next int64
+		err = dstDB.QueryRowContext(integrationContext(t), "SELECT USED_SEQ.NEXTVAL FROM dual").Scan(&next)
+		require.ErrorContains(t, err, "ORA-08004")
+		require.NoError(t, dstDB.QueryRowContext(integrationContext(t), "SELECT CYCLE_SEQ.NEXTVAL FROM dual").Scan(&next))
+		assert.EqualValues(t, 1, next)
+		// The empty table's identity keeps its START WITH (LIMIT VALUE would restart it at 1).
+		_, err = dst.Execute(integrationContext(t), "INSERT INTO NOTE (TXT) VALUES ('x')")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"500"}, textRows(t, admin, "SELECT TO_CHAR(ID) FROM "+quoteIdent(dstName)+".NOTE"))
 		// The identity continues past the rows (10, 12), the sequence default past
 		// the values the source handed out (100, 105, 110).
 		_, err = dst.Execute(integrationContext(t), "INSERT INTO DEPT (NAME) VALUES ('after')")

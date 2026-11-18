@@ -198,6 +198,12 @@ func runDump(t *testing.T, session *sqldb.Session, source dumpSource, req dbdriv
 // rows, rows without the virtual column, the foreign keys after all data and the
 // identity back to ALWAYS with its next value past the rows.
 func TestDumpSchemaGolden(t *testing.T) {
+	dumpGolden(t, "dump_schema.sql", schemaDump(t))
+}
+
+// schemaDump is the whole schema HR with its data (TestDumpSchemaGolden).
+func schemaDump(t *testing.T) []byte {
+	t.Helper()
 	session, mock := newDumpMock(t)
 	expectSequences(mock)
 
@@ -227,7 +233,7 @@ func TestDumpSchemaGolden(t *testing.T) {
 		AddRow("BONUS", "NUMBER", "YES", `"SALARY"*0.1`, nil, 0, 0, 0))
 
 	source := dumpSource{Session: session, tables: []string{"DEPT", "EMP"}, rows: map[string]*sliceStream{
-		"DEPT": {columns: []string{"ID", "NAME"}, rows: [][]any{{"1", "Sales"}, {"2", "O'Brien & Co"}}},
+		"DEPT": {columns: []string{"ID", "NAME"}, rows: [][]any{{"1", "Sales"}, {"2", "O'Brien & Co"}, {"3", "AT&T"}}},
 		"EMP": {columns: []string{"ID", "DEPT_ID", "REGION_ID", "EMAIL", "SALARY", "BONUS"},
 			rows: [][]any{{"40", "2", nil, "a@example.com", "1000.5", "100.05"}}},
 	}}
@@ -235,8 +241,8 @@ func TestDumpSchemaGolden(t *testing.T) {
 		Database: "HR", Whole: true, WithData: true,
 		Options: dbdriver.DumpOptions{Indexes: true, ForeignKeys: true, Drops: true},
 	})
-	dumpGolden(t, "dump_schema.sql", got)
 	require.NoError(t, mock.ExpectationsWereMet())
+	return got
 }
 
 // One selected table, structure only and without its non-unique indexes: the
@@ -426,6 +432,7 @@ func TestWithoutOwner(t *testing.T) {
 		{"another schema", "HR", `INSERT INTO ref.items VALUES (1)`, `INSERT INTO ref.items VALUES (1)`},
 		{"strings and comments", "HR", "'HR.ITEMS' || q'[HR.ITEMS]' -- HR.ITEMS\n/* HR.ITEMS */", "'HR.ITEMS' || q'[HR.ITEMS]' -- HR.ITEMS\n/* HR.ITEMS */"},
 		{"after a dot, a link or a bind", "HR", `x.hr.items; t@hr.items; :hr.items`, `x.hr.items; t@hr.items; :hr.items`},
+		{"an object over a database link", "HR", `FROM hr.items@remote, HR.ITEMS @ remote`, `FROM hr.items@remote, HR.ITEMS @ remote`},
 		{"an alias spelled like the schema", "HR", `SELECT hr.id FROM items hr`, `SELECT hr.id FROM items hr`},
 		{"a longer name", "HR", `HR_X.ITEMS, X_HR.ITEMS, HR$.ITEMS`, `HR_X.ITEMS, X_HR.ITEMS, HR$.ITEMS`},
 	} {
@@ -462,4 +469,13 @@ func TestTriggerDDLWithoutItsStateIsAnError(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "state")
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A dump runs back through Run SQL File as written: a value with an & is no
+// SQL*Plus substitution variable in it.
+func TestDumpRunsBackAsASQLFile(t *testing.T) {
+	file := string(schemaDump(t))
+	got, err := runScriptText(file, len(file)+1)
+	require.NoError(t, err)
+	assert.Contains(t, got.executed, `INSERT INTO "DEPT" ("ID", "NAME") VALUES (3, 'AT&T')`)
 }

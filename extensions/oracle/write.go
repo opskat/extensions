@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -209,7 +209,11 @@ const (
 func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 	large := make(map[int]largeLob)
 	for i, column := range row.Columns {
-		if lob, ok := splitLob(column); ok {
+		lob, ok, err := splitLob(column, row.Literals)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
 			large[i] = lob
 		}
 	}
@@ -258,8 +262,9 @@ type largeLob struct {
 }
 
 // splitLob reports whether column holds a CLOB, NCLOB or BLOB value too large for
-// one literal, and splits it into the calls that append it.
-func splitLob(column sqldb.InsertColumn) (largeLob, bool) {
+// one literal, and splits it into the calls that append it, each piece the
+// column's literal (literals: N'…' for national text, HEXTORAW for bytes).
+func splitLob(column sqldb.InsertColumn, literals sqldb.Literals) (largeLob, bool, error) {
 	var text string
 	switch v := column.Value.(type) {
 	case string:
@@ -267,36 +272,40 @@ func splitLob(column sqldb.InsertColumn) (largeLob, bool) {
 	case []byte:
 		text = string(v)
 	default:
-		return largeLob{}, false
+		return largeLob{}, false, nil
 	}
 	kind := typeName(column.Type)
+	var lob largeLob
 	var pieces []string
+	// arguments are a piece's arguments after the locator, given its literal.
+	var arguments func(piece, literal string) string
 	switch kind {
 	case "CLOB", "NCLOB":
-		national := kind == "NCLOB"
-		texts := textPieces(text, national)
-		if len(texts) < 2 {
-			return largeLob{}, false
+		if pieces = textPieces(text, kind == "NCLOB"); len(pieces) < 2 {
+			return largeLob{}, false, nil
 		}
-		for _, piece := range texts {
-			if national {
-				pieces = append(pieces, "TO_NCLOB(N"+sqlString(piece)+")")
-			} else {
-				pieces = append(pieces, "TO_CLOB("+sqlString(piece)+")")
-			}
-		}
-		return largeLob{kind: kind, empty: "EMPTY_CLOB()", call: "DBMS_LOB.APPEND", pieces: pieces}, true
+		lob = largeLob{kind: kind, empty: "EMPTY_CLOB()", call: "DBMS_LOB.APPEND"}
+		arguments = func(_, literal string) string { return "TO_" + kind + "(" + literal + ")" }
 	case "BLOB":
 		if len(text) <= maxRawLiteral {
-			return largeLob{}, false
+			return largeLob{}, false, nil
 		}
 		for start := 0; start < len(text); start += maxRawLiteral {
-			piece := text[start:min(start+maxRawLiteral, len(text))]
-			pieces = append(pieces, fmt.Sprintf("%d, HEXTORAW('%s')", len(piece), hex.EncodeToString([]byte(piece))))
+			pieces = append(pieces, text[start:min(start+maxRawLiteral, len(text))])
 		}
-		return largeLob{kind: kind, empty: "EMPTY_BLOB()", call: "DBMS_LOB.WRITEAPPEND", pieces: pieces}, true
+		lob = largeLob{kind: kind, empty: "EMPTY_BLOB()", call: "DBMS_LOB.WRITEAPPEND"}
+		arguments = func(piece, literal string) string { return strconv.Itoa(len(piece)) + ", " + literal }
+	default:
+		return largeLob{}, false, nil
 	}
-	return largeLob{}, false
+	for _, piece := range pieces {
+		literal, err := literals.Literal(piece, column.Type)
+		if err != nil {
+			return largeLob{}, false, err
+		}
+		lob.pieces = append(lob.pieces, arguments(piece, literal))
+	}
+	return lob, true, nil
 }
 
 // textPieces splits text into pieces whose string literals fit maxTextLiteral,

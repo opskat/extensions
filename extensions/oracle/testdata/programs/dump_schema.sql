@@ -9,6 +9,8 @@
 --
 -- File encoding: UTF-8
 
+SET DEFINE OFF;
+
 -- ----------------------------
 -- Drop existing objects
 -- ----------------------------

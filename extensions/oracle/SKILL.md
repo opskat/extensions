@@ -91,21 +91,23 @@ as they are. Between statements, the file's SQL*Plus commands are handled as fol
 "Dump SQL File" on a schema or on selected tables writes a file that runs in any
 user — it names neither the source schema nor any tablespace or storage:
 
+- `SET DEFINE OFF` first, so an `&` in its values or code is text to SQL*Plus and
+  to Run SQL File;
 - the schema's own sequences (for selected tables, the ones their column defaults
   use), starting at or past the source's current value;
 - each table's `CREATE TABLE` with its constraints, identity columns and comments,
   then the indexes no constraint creates;
 - with data, one `INSERT` per row (no virtual columns); a `GENERATED ALWAYS`
   identity column is `BY DEFAULT` while its rows go in, and every identity column
-  continues past the rows afterwards;
+  continues past the rows afterwards (one of an empty table keeps its `START WITH`);
 - the foreign keys after all data: Oracle cannot turn foreign key checks off, so
   "disable foreign key checks" is not offered;
 - for a whole schema, its views (each a complete `CREATE OR REPLACE`), functions,
   procedures and packages (spec, then body), ordered by `ALL_DEPENDENCIES` so
   what an object uses comes first, each PL/SQL unit ending in a `/` line; the
   schema's own objects named with the schema inside a view's query or a unit's
-  body lose it, names of other schemas keep theirs; materialized views are left
-  out;
+  body lose it, names of other schemas and over database links keep theirs;
+  materialized views are left out;
 - for a whole schema, its triggers after all data, without the schema of their
   table or of the schema's other objects they name, each followed by
   `ALTER TRIGGER … ENABLE` or `DISABLE` as it was;
