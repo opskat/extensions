@@ -40,6 +40,7 @@ const (
 	triggerMetadataPattern = `GET_DDL\('TRIGGER'`
 	dependenciesPattern    = `FROM all_dependencies`
 	mviewPattern           = `FROM all_mviews`
+	schemaObjectsPattern   = `object_name IN \(`
 )
 
 // dumpSource is the session as the dump orchestration reads it, with the listing,
@@ -304,20 +305,21 @@ func TestDumpTableDiscardsAConnectionItCannotReset(t *testing.T) {
 
 var (
 	dependencyColumns = []string{"REFERENCED_TYPE", "REFERENCED_NAME"}
-	triggerColumns    = []string{"DDL", "OWNER", "TABLE_OWNER", "TABLE_NAME"}
+	triggerColumns    = []string{"DDL"}
 )
 
 // DBMS_METADATA's DDL of the programs under the dump's transforms: no schema on
-// the unit's name, the rest as the user wrote it — a trigger's ON clause keeps
-// the schema it was typed with, and the trigger's state follows as an ALTER.
+// the unit's name, the rest as the user wrote it — names typed with the schema
+// (a package called, a view's table, a trigger's ON clause) keep it, and the
+// trigger's state follows as an ALTER.
 const (
 	itemsDDL   = "\n  CREATE TABLE \"ITEMS\" (\"ID\" NUMBER PRIMARY KEY, \"PRICE\" NUMBER) \n  "
 	fTaxDDL    = "\n  CREATE OR REPLACE EDITIONABLE FUNCTION \"F_TAX\" (p NUMBER) RETURN NUMBER IS\nBEGIN\n  RETURN p * 0.1;\nEND;\n"
 	pkgSpecDDL = "\n  CREATE OR REPLACE EDITIONABLE PACKAGE \"UTIL_PKG\" AS\n  PROCEDURE log(msg VARCHAR2);\nEND util_pkg;\n"
 	pkgBodyDDL = "\n  CREATE OR REPLACE EDITIONABLE PACKAGE BODY \"UTIL_PKG\" AS\n  PROCEDURE log(msg VARCHAR2) IS BEGIN NULL; END;\nEND util_pkg;\n"
-	pRunDDL    = "\n  CREATE OR REPLACE EDITIONABLE PROCEDURE \"P_RUN\" AS\nBEGIN\n  util_pkg.log('run');\nEND;\n"
-	vItemsDDL  = "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"V_ITEMS\" (\"ID\", \"PRICE\", \"TAX\") AS \n  SELECT id, price, f_tax(price) tax FROM items\n"
-	vExpDDL    = "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"V_EXP\" (\"ID\", \"TAX\") AS \n  SELECT id, tax FROM v_items WHERE price > 10\n"
+	pRunDDL    = "\n  CREATE OR REPLACE EDITIONABLE PROCEDURE \"P_RUN\" AS\nBEGIN\n  hr . util_pkg.log('run'); -- HR.UTIL_PKG\nEND;\n"
+	vItemsDDL  = "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"V_ITEMS\" (\"ID\", \"PRICE\", \"TAX\") AS \n  SELECT id, price, \"HR\".f_tax(price) tax FROM HR.items\n"
+	vExpDDL    = "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"V_EXP\" (\"ID\", \"TAX\") AS \n  SELECT hr.id, tax FROM v_items hr WHERE price > 10\n"
 	trgBiDDL   = "\n  CREATE OR REPLACE EDITIONABLE TRIGGER \"TRG_BI\" BEFORE INSERT ON HR.ITEMS FOR EACH ROW\nBEGIN\n" +
 		"  IF :new.id IS NULL THEN :new.id := item_seq.nextval; END IF;\n  INSERT INTO ref.audit_log VALUES ('ON HR.ITEMS');\nEND;\n" +
 		"ALTER TRIGGER \"TRG_BI\" ENABLE"
@@ -340,7 +342,7 @@ func expectProgram(mock sqlmock.Sqlmock, name string, dependencies [][]any, ddl 
 
 func expectTrigger(mock sqlmock.Sqlmock, name, ddl string) {
 	mock.ExpectExec(setTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(triggerMetadataPattern).WithArgs("HR", name).WillReturnRows(rowsOf(triggerColumns, []any{ddl, "HR", "HR", "ITEMS"}))
+	mock.ExpectQuery(triggerMetadataPattern).WithArgs("HR", name).WillReturnRows(rowsOf(triggerColumns, []any{ddl}))
 	mock.ExpectExec(resetTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
@@ -373,6 +375,13 @@ func TestDumpProgramsGolden(t *testing.T) {
 	expectProgram(mock, "V_EXP", [][]any{{"FUNCTION", "F_TAX"}, {"VIEW", "V_ITEMS"}}, vExpDDL)
 	expectProgram(mock, "V_ITEMS", [][]any{{"FUNCTION", "F_TAX"}}, vItemsDDL)
 	mock.ExpectQuery(mviewPattern).WithArgs("HR", "ITEMS_MV").WillReturnRows(names("N", "1"))
+	// Which names typed with the schema are its objects: hr.id in V_EXP is a
+	// column of the view's alias hr.
+	mock.ExpectQuery(schemaObjectsPattern).WithArgs("HR", "UTIL_PKG").WillReturnRows(names("OBJECT_NAME", "UTIL_PKG"))
+	mock.ExpectQuery(schemaObjectsPattern).WithArgs("HR", "F_TAX", "ITEMS").WillReturnRows(names("OBJECT_NAME", "F_TAX", "ITEMS"))
+	mock.ExpectQuery(schemaObjectsPattern).WithArgs("HR", "ID").WillReturnRows(names("OBJECT_NAME"))
+	mock.ExpectQuery(schemaObjectsPattern).WithArgs("HR", "ITEMS").WillReturnRows(names("OBJECT_NAME", "ITEMS"))
+	mock.ExpectQuery(schemaObjectsPattern).WithArgs("HR", "ITEMS").WillReturnRows(names("OBJECT_NAME", "ITEMS"))
 	expectTrigger(mock, "TRG_BI", trgBiDDL)
 	expectTrigger(mock, "TRG_STMT", trgStmtDDL)
 
@@ -400,28 +409,41 @@ func TestDumpProgramsGolden(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// A trigger's ON clause loses the schema only where it names the trigger's
-// table in the trigger's own schema, however the name was typed; nothing after
-// the clause is rewritten.
-func TestTriggerWithoutTableSchema(t *testing.T) {
+// A name of the schema's own objects loses the schema however it was typed
+// with it; strings, comments, names after a dot, a database link, a bind, a
+// table alias spelled like the schema, another schema and a mixed case schema
+// not typed quoted keep theirs.
+func TestWithoutOwner(t *testing.T) {
+	objects := map[string]bool{"ITEMS": true, "UTIL_PKG": true, "Items": true, "SEQ": true}
 	for _, tc := range []struct {
-		name, header, owner, tableOwner, table, want string
+		name, owner, ddl, want string
 	}{
-		{"unquoted", `TRIGGER "T" BEFORE INSERT ON HR.ITEMS FOR EACH ROW`, "HR", "HR", "ITEMS",
-			`TRIGGER "T" BEFORE INSERT ON ITEMS FOR EACH ROW`},
-		{"lower case and quoted", `trigger "T" after update on "HR" . items`, "HR", "HR", "ITEMS", `trigger "T" after update on items`},
-		{"quoted mixed case", `TRIGGER "T" AFTER DELETE ON "Hr"."Items"`, "Hr", "Hr", "Items", `TRIGGER "T" AFTER DELETE ON "Items"`},
-		{"unquoted is not the mixed case schema", `TRIGGER "T" AFTER DELETE ON HR.ITEMS`, "Hr", "Hr", "ITEMS",
-			`TRIGGER "T" AFTER DELETE ON HR.ITEMS`},
-		{"column named like the keyword", `TRIGGER "T" BEFORE UPDATE OF ON_HAND ON HR.ITEMS`, "HR", "HR", "ITEMS",
-			`TRIGGER "T" BEFORE UPDATE OF ON_HAND ON ITEMS`},
-		{"another schema's table", `TRIGGER "T" BEFORE INSERT ON REF.ITEMS`, "HR", "REF", "ITEMS", `TRIGGER "T" BEFORE INSERT ON REF.ITEMS`},
+		{"unquoted", "HR", `ON HR.ITEMS FOR EACH ROW`, `ON ITEMS FOR EACH ROW`},
+		{"any case, quoted, blanks around the dot", "HR", `on "HR" . items; hr.util_pkg.log; Hr."SEQ".nextval`,
+			`on items; util_pkg.log; "SEQ".nextval`},
+		{"quoted mixed case", "Hr", `ON "Hr"."Items"`, `ON "Items"`},
+		{"unquoted is not the mixed case schema", "Hr", `ON HR.ITEMS`, `ON HR.ITEMS`},
+		{"another schema", "HR", `INSERT INTO ref.items VALUES (1)`, `INSERT INTO ref.items VALUES (1)`},
+		{"strings and comments", "HR", "'HR.ITEMS' || q'[HR.ITEMS]' -- HR.ITEMS\n/* HR.ITEMS */", "'HR.ITEMS' || q'[HR.ITEMS]' -- HR.ITEMS\n/* HR.ITEMS */"},
+		{"after a dot, a link or a bind", "HR", `x.hr.items; t@hr.items; :hr.items`, `x.hr.items; t@hr.items; :hr.items`},
+		{"an alias spelled like the schema", "HR", `SELECT hr.id FROM items hr`, `SELECT hr.id FROM items hr`},
+		{"a longer name", "HR", `HR_X.ITEMS, X_HR.ITEMS, HR$.ITEMS`, `HR_X.ITEMS, X_HR.ITEMS, HR$.ITEMS`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := "\nBEGIN\n  DELETE FROM hr.items WHERE 1 = 0; -- ON HR.ITEMS\nEND;"
-			assert.Equal(t, tc.want+body, triggerWithoutTableSchema(tc.header+body, tc.owner, tc.tableOwner, tc.table))
+			got, err := withoutOwner(tc.ddl, tc.owner, func(names []string) (map[string]bool, error) { return objects, nil })
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// Without a name typed with the schema the dictionary is not asked.
+func TestWithoutOwnerAsksNothingWithoutAQualifiedName(t *testing.T) {
+	got, err := withoutOwner(`SELECT id FROM items`, "HR", func([]string) (map[string]bool, error) {
+		return nil, errors.New("asked")
+	})
+	require.NoError(t, err)
+	assert.Equal(t, `SELECT id FROM items`, got)
 }
 
 // DBMS_METADATA writes a trigger's state as an ALTER after it; a trigger DDL
@@ -430,7 +452,7 @@ func TestTriggerDDLWithoutItsStateIsAnError(t *testing.T) {
 	session, mock := newMockSession(t)
 	mock.ExpectExec(setTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(triggerMetadataPattern).WithArgs("HR", "TRG").
-		WillReturnRows(rowsOf(triggerColumns, []any{`CREATE OR REPLACE TRIGGER "TRG" BEFORE INSERT ON ITEMS BEGIN NULL; END;`, "HR", "HR", "ITEMS"}))
+		WillReturnRows(rowsOf(triggerColumns, []any{`CREATE OR REPLACE TRIGGER "TRG" BEFORE INSERT ON ITEMS BEGIN NULL; END;`}))
 	mock.ExpectExec(resetTransformsPattern).WillReturnResult(sqlmock.NewResult(0, 0))
 
 	dialect, err := session.(*sqldb.Session).DumpDialect()

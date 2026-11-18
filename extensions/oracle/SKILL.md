@@ -102,11 +102,13 @@ user — it names neither the source schema nor any tablespace or storage:
   "disable foreign key checks" is not offered;
 - for a whole schema, its views (each a complete `CREATE OR REPLACE`), functions,
   procedures and packages (spec, then body), ordered by `ALL_DEPENDENCIES` so
-  what an object uses comes first, each PL/SQL unit ending in a `/` line; names
-  written with a schema inside a view's query or a unit's body stay as written;
-  materialized views are left out;
+  what an object uses comes first, each PL/SQL unit ending in a `/` line; the
+  schema's own objects named with the schema inside a view's query or a unit's
+  body lose it, names of other schemas keep theirs; materialized views are left
+  out;
 - for a whole schema, its triggers after all data, without the schema of their
-  table, each followed by `ALTER TRIGGER … ENABLE` or `DISABLE` as it was;
+  table or of the schema's other objects they name, each followed by
+  `ALTER TRIGGER … ENABLE` or `DISABLE` as it was;
 - with drop statements, PL/SQL blocks that drop the foreign keys, the triggers,
   views, procedures, packages and functions (in reverse dependency order), the
   tables and the sequences and ignore the ones that do not exist, each ending in

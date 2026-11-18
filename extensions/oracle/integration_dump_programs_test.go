@@ -36,12 +36,13 @@ func grantPrograms(t *testing.T, admin *sql.DB, name string) {
 }
 
 // programsFixture is a schema with what the programs part of a dump covers: a
-// function (its name typed with the schema) used by a view, a view on that view
-// (listed before it), a package with its body, a procedure calling the package
-// (listed before it), a row trigger using a sequence (typed with the schema, on
-// its table typed with the schema), a disabled statement trigger (lower case,
-// on its table with the schema) and a materialized view, which the dump leaves
-// out. The rows go in before the triggers exist: a
+// function (its name typed with the schema) used by a view (its table typed with
+// the schema), a view on that view (listed before it), a package with its body
+// (its table typed with the schema), a procedure calling the package (typed with
+// the schema; listed before it), a row trigger using a sequence (typed with the
+// schema, on its table typed with the schema), a disabled statement trigger
+// (lower case, on its table with the schema) and a materialized view, which the
+// dump leaves out. The rows go in before the triggers exist: a
 // trigger firing on the restored rows would mark them.
 func programsFixture(owner string) []string {
 	return []string{
@@ -53,9 +54,9 @@ func programsFixture(owner string) []string {
 		"CREATE OR REPLACE FUNCTION " + owner + ".F_TAX(p NUMBER) RETURN NUMBER IS\nBEGIN\n  RETURN p * 0.1;\nEND;",
 		"CREATE OR REPLACE PACKAGE UTIL_PKG AS\n  PROCEDURE log(p_id NUMBER, p_event VARCHAR2);\nEND util_pkg;",
 		"CREATE OR REPLACE PACKAGE BODY UTIL_PKG AS\n  PROCEDURE log(p_id NUMBER, p_event VARCHAR2) IS\n  BEGIN\n" +
-			"    INSERT INTO items_log VALUES (p_id, p_event);\n  END;\nEND util_pkg;",
-		"CREATE OR REPLACE PROCEDURE P_RUN AS\nBEGIN\n  util_pkg.log(0, 'run');\nEND;",
-		"CREATE VIEW V_ITEMS AS SELECT id, price, f_tax(price) tax FROM items",
+			"    INSERT INTO " + owner + ".items_log VALUES (p_id, p_event);\n  END;\nEND util_pkg;",
+		"CREATE OR REPLACE PROCEDURE P_RUN AS\nBEGIN\n  " + strings.ToLower(owner) + ".util_pkg.log(0, 'run');\nEND;",
+		"CREATE VIEW V_ITEMS AS SELECT id, price, f_tax(price) tax FROM \"" + owner + "\".items",
 		"CREATE VIEW V_EXP (ID, TAX) AS SELECT id, tax FROM v_items WHERE price > 10",
 		"CREATE MATERIALIZED VIEW ITEMS_MV AS SELECT id, price FROM items",
 		"CREATE TRIGGER " + owner + ".TRG_BI BEFORE INSERT ON " + owner + ".ITEMS FOR EACH ROW\nBEGIN\n" +
@@ -73,14 +74,14 @@ const programTypes = "'VIEW', 'FUNCTION', 'PROCEDURE', 'PACKAGE', 'PACKAGE BODY'
 var layout = regexp.MustCompile(`[\s"]+`)
 
 // programShape is what a round trip must keep of owner's programs, each line
-// sorted, the owner blanked: the objects and their validity, the views' text,
-// every unit's source (its first line, the header DBMS_METADATA rewrites, without
-// the owner, whitespace and quotes), the triggers' events and state, and their
-// dependencies.
+// sorted, the owner blanked: the objects and their validity, the views' text and
+// every unit's source without the owner's name where it qualifies one (its first
+// line, the header DBMS_METADATA rewrites, also without whitespace and quotes),
+// the triggers' events and state, and their dependencies.
 func programShape(t *testing.T, admin *sql.DB, owner string) []string {
 	t.Helper()
 	o := sqlString(owner)
-	ownerPrefix := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(owner) + `\.`)
+	ownerPrefix := regexp.MustCompile(`(?i)"?` + regexp.QuoteMeta(owner) + `"?\.`)
 	var shape []string
 	for _, part := range []struct{ name, query string }{
 		{"object", "SELECT object_name, object_type, status FROM all_objects WHERE owner = " + o +
@@ -96,8 +97,14 @@ func programShape(t *testing.T, admin *sql.DB, owner string) []string {
 			if strings.Contains(row, "BIN$") { // the copies a drop leaves in the recycle bin
 				continue
 			}
-			if fields := strings.SplitN(row, "|", 4); part.name == "source" && fields[2] == "1" {
-				fields[3] = strings.ToUpper(layout.ReplaceAllString(ownerPrefix.ReplaceAllString(fields[3], ""), ""))
+			switch fields := strings.SplitN(row, "|", 4); part.name {
+			case "view":
+				row = ownerPrefix.ReplaceAllString(row, "")
+			case "source":
+				fields[3] = ownerPrefix.ReplaceAllString(fields[3], "")
+				if fields[2] == "1" {
+					fields[3] = strings.ToUpper(layout.ReplaceAllString(fields[3], ""))
+				}
 				row = strings.Join(fields, "|")
 			}
 			shape = append(shape, part.name+": "+row)

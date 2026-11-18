@@ -69,13 +69,9 @@ END util_pkg;
 -- ----------------------------
 CREATE OR REPLACE EDITIONABLE PROCEDURE "P_RUN" AS
 BEGIN
-  util_pkg.log('run');
+  util_pkg.log('run'); -- HR.UTIL_PKG
 END;
 /
-
--- ----------------------------
--- View structure for ITEMS_MV
--- ----------------------------
 
 -- ----------------------------
 -- View structure for V_ITEMS
@@ -87,7 +83,7 @@ CREATE OR REPLACE FORCE EDITIONABLE VIEW "V_ITEMS" ("ID", "PRICE", "TAX") AS
 -- View structure for V_EXP
 -- ----------------------------
 CREATE OR REPLACE FORCE EDITIONABLE VIEW "V_EXP" ("ID", "TAX") AS 
-  SELECT id, tax FROM v_items WHERE price > 10;
+  SELECT hr.id, tax FROM v_items hr WHERE price > 10;
 
 -- ----------------------------
 -- Trigger structure for TRG_BI

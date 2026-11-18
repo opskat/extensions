@@ -516,10 +516,11 @@ const programDDLQuery = "SELECT DBMS_METADATA.GET_DDL(DECODE(o.object_type, 'PAC
 
 // dumpProgram writes a view, function, procedure or package without its schema,
 // as DBMS_METADATA gives it: a view's complete CREATE OR REPLACE, each PL/SQL
-// unit (a package's spec, then its body) ending in a "/" line. Names written
-// with a schema inside a view's query or a unit's body stay as written. Its
-// dependencies on the schema's views, functions, procedures and packages order
-// it after them. A materialized view, listed with the views, is left out.
+// unit (a package's spec, then its body) ending in a "/" line. The schema's own
+// objects named with it inside a view's query or a unit's body lose it
+// (withoutOwner). Its dependencies on the schema's views, functions, procedures
+// and packages order it after them. A materialized view, listed with the views,
+// is left out.
 func dumpProgram(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject, script *dbdriver.DumpObjectScript) error {
 	if object.Kind == dbdriver.ObjectView {
 		mview, err := isMaterializedView(ctx, conn, object.Database, object.Name)
@@ -554,6 +555,9 @@ func dumpProgram(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject
 	script.Drop = []string{dropBlock("DROP "+p.drop+" "+quoteIdent(unit), p.missing)}
 	script.Definition = make([]string, len(parts))
 	for i, ddl := range parts {
+		if ddl, err = withoutOwner(ddl, object.Database, schemaObjects(ctx, conn, object.Database)); err != nil {
+			return sqldb.Wrap("objects named with the schema", err)
+		}
 		if object.Kind == dbdriver.ObjectView {
 			script.Definition[i] = sqldb.TerminateStatement(strings.TrimSpace(ddl))
 		} else {
@@ -611,9 +615,8 @@ func programDependencies(ctx context.Context, conn *sql.Conn, schema, unit strin
 	return out, rows.Err()
 }
 
-// triggerDDLQuery gives a trigger's DDL, its schema as Oracle spells it and the
-// table it is on.
-const triggerDDLQuery = "SELECT DBMS_METADATA.GET_DDL('TRIGGER', t.trigger_name, t.owner) AS DDL, t.owner, t.table_owner, t.table_name " +
+// triggerDDLQuery gives a trigger's DDL.
+const triggerDDLQuery = "SELECT DBMS_METADATA.GET_DDL('TRIGGER', t.trigger_name, t.owner) AS DDL " +
 	"FROM all_triggers t WHERE t.owner = " + ownerIs + " AND t.trigger_name = :2"
 
 // triggerState is the ALTER TRIGGER … ENABLE / DISABLE DBMS_METADATA writes
@@ -621,12 +624,13 @@ const triggerDDLQuery = "SELECT DBMS_METADATA.GET_DDL('TRIGGER', t.trigger_name,
 var triggerState = regexp.MustCompile(`(?s)^(.*?)\s*ALTER TRIGGER ("(?:[^"]|"")+") (ENABLE|DISABLE)\s*$`)
 
 // dumpTrigger writes a trigger (the host puts it after all data) without its
-// schema or its table's, a "/" line after it, then its state, enabled or
+// schema, nor the schema's name on its table and on the schema's other objects it
+// names (withoutOwner), a "/" line after it, then its state, enabled or
 // disabled, as an ALTER TRIGGER.
 func dumpTrigger(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject, script *dbdriver.DumpObjectScript) error {
-	var ddl, owner, tableOwner, table string
+	var ddl string
 	if err := withDumpTransforms(ctx, conn, func() error {
-		return conn.QueryRowContext(ctx, triggerDDLQuery, object.Database, object.Name).Scan(&ddl, &owner, &tableOwner, &table)
+		return conn.QueryRowContext(ctx, triggerDDLQuery, object.Database, object.Name).Scan(&ddl)
 	}); err != nil {
 		return err
 	}
@@ -634,40 +638,158 @@ func dumpTrigger(ctx context.Context, conn *sql.Conn, object dbdriver.DumpObject
 	if state == nil {
 		return fmt.Errorf("DBMS_METADATA gave trigger %s without its state", object.Name)
 	}
-	script.Drop = []string{dropBlock("DROP TRIGGER "+quoteIdent(object.Name), oraTriggerMissing)}
-	script.Definition = []string{
-		plsqlUnit(triggerWithoutTableSchema(state[1], owner, tableOwner, table)),
-		"ALTER TRIGGER " + state[2] + " " + state[3] + ";",
+	create, err := withoutOwner(state[1], object.Database, schemaObjects(ctx, conn, object.Database))
+	if err != nil {
+		return sqldb.Wrap("objects named with the schema", err)
 	}
+	script.Drop = []string{dropBlock("DROP TRIGGER "+quoteIdent(object.Name), oraTriggerMissing)}
+	script.Definition = []string{plsqlUnit(create), "ALTER TRIGGER " + state[2] + " " + state[3] + ";"}
 	return nil
 }
 
-// triggerWithoutTableSchema drops the schema from the ON clause of a trigger's
-// DDL when it names the trigger's table in the trigger's own schema (owner), as
-// the user typed it: quoted, or unquoted in any case. Only the clause is
-// rewritten — the first ON naming the table, before the body — and a table of
-// another schema keeps its schema.
-func triggerWithoutTableSchema(ddl, owner, tableOwner, table string) string {
-	if tableOwner != owner {
-		return ddl
+// withoutOwner drops the schema owner from the names ddl qualifies with it —
+// OWNER.NAME as Oracle reads it: the owner quoted, or unquoted in any case when
+// Oracle would read it so, blanks around the dot — where NAME is one of the
+// schema's objects (isObject answers for the names found), so the code names the
+// objects of whichever user runs the file. Strings, comments, a name after a dot
+// (a column, a package's member), an @ (a database link) or a : (a bind such as
+// :new) and a table alias spelled like the schema (its NAME is a column, no
+// object) are left as they are.
+func withoutOwner(ddl, owner string, isObject func(names []string) (map[string]bool, error)) (string, error) {
+	qualifiers := ownerQualifiers(ddl, owner)
+	if len(qualifiers) == 0 {
+		return ddl, nil
 	}
-	clause := regexp.MustCompile(`(?i:\bON)(\s+)` + identPattern(owner) + `\s*\.\s*(` + identPattern(table) + `)`)
-	at := clause.FindStringSubmatchIndex(ddl)
-	if at == nil {
-		return ddl
+	var names []string
+	for _, q := range qualifiers {
+		if !slices.Contains(names, q.name) {
+			names = append(names, q.name)
+		}
 	}
-	return ddl[:at[0]] + ddl[at[0]:at[2]] + ddl[at[2]:at[3]] + ddl[at[4]:at[5]] + ddl[at[1]:]
+	objects, err := isObject(names)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	last := 0
+	for _, q := range qualifiers {
+		if objects[q.name] {
+			b.WriteString(ddl[last:q.start])
+			last = q.end
+		}
+	}
+	b.WriteString(ddl[last:])
+	return b.String(), nil
+}
+
+// ownerQualifier is an owner qualifying a name in a DDL: ddl[start:end] is the
+// owner, the dot and the blanks up to the name, which is name as Oracle reads it.
+type ownerQualifier struct {
+	start, end int
+	name       string
+}
+
+// ownerQualifiers finds where owner qualifies a name in ddl, outside strings and
+// comments (see withoutOwner).
+func ownerQualifiers(ddl, owner string) []ownerQualifier {
+	m := newMasker(ddl, true)
+	quoted, bare := quoteIdent(owner), unquotedName.MatchString(owner)
+	var out []ownerQualifier
+	var prev byte // the last byte before i that is no blank and no comment
+	for i := 0; i < len(ddl); {
+		c := ddl[i]
+		switch {
+		case isBlank(c) || strings.HasPrefix(ddl[i:], "--") || strings.HasPrefix(ddl[i:], "/*"):
+			i = m.maskUnit(i)
+			continue
+		case c == '\'' || qQuoteAt(ddl, i):
+			i, prev = m.maskUnit(i), '\''
+			continue
+		case c != '"' && !isWordByte(c):
+			i, prev = i+1, c
+			continue
+		}
+		end := identEnd(ddl, i)
+		if end < 0 {
+			break // an unterminated quoted identifier
+		}
+		token := ddl[i:end]
+		if prev != '.' && prev != '@' && prev != ':' && (token == quoted || (bare && strings.EqualFold(token, owner))) {
+			if dot := skipBlanks(ddl, end); dot < len(ddl) && ddl[dot] == '.' {
+				at := skipBlanks(ddl, dot+1)
+				if name, ok := identName(ddl, at); ok {
+					out = append(out, ownerQualifier{start: i, end: at, name: name})
+				}
+			}
+		}
+		i, prev = end, 'a'
+	}
+	return out
+}
+
+// identEnd is where the identifier at i (quoted, or a run of identifier bytes)
+// ends, or -1 for a quoted one without its closing quote.
+func identEnd(s string, i int) int {
+	if s[i] == '"' {
+		k := strings.IndexByte(s[i+1:], '"')
+		if k < 0 {
+			return -1
+		}
+		return i + 1 + k + 1
+	}
+	j := i
+	for j < len(s) && isWordByte(s[j]) {
+		j++
+	}
+	return j
+}
+
+// identName reads the identifier at i as Oracle names it: a quoted one as
+// written, an unquoted one (starting with a letter) in upper case.
+func identName(s string, i int) (string, bool) {
+	if i >= len(s) || (s[i] != '"' && !isWordByte(s[i])) || (s[i] >= '0' && s[i] <= '9') {
+		return "", false
+	}
+	end := identEnd(s, i)
+	if end < 0 {
+		return "", false
+	}
+	if s[i] == '"' {
+		return s[i+1 : end-1], true
+	}
+	return strings.ToUpper(s[i:end]), true
+}
+
+func skipBlanks(s string, i int) int {
+	for i < len(s) && isBlank(s[i]) {
+		i++
+	}
+	return i
 }
 
 // unquotedName is an identifier Oracle takes unquoted, in any case.
 var unquotedName = regexp.MustCompile(`^[A-Z][A-Z0-9_$#]*$`)
 
-// identPattern matches name written quoted, or unquoted in any case when Oracle
-// would read it so, not followed by more of an identifier.
-func identPattern(name string) string {
-	quoted := regexp.QuoteMeta(quoteIdent(name))
-	if !unquotedName.MatchString(name) {
-		return quoted
+// schemaObjectsQuery tells which of the names bound after the schema (:2 …) are
+// the schema's objects.
+const schemaObjectsQuery = "SELECT DISTINCT object_name FROM all_objects WHERE owner = " + ownerIs + " AND object_name IN (%s)"
+
+// schemaObjects answers which names are objects of the schema.
+func schemaObjects(ctx context.Context, conn *sql.Conn, schema string) func([]string) (map[string]bool, error) {
+	return func(names []string) (map[string]bool, error) {
+		binds, args := make([]string, len(names)), []any{schema}
+		for i, name := range names {
+			binds[i] = ":" + strconv.Itoa(i+2)
+			args = append(args, name)
+		}
+		found, err := sqldb.QueryNames(ctx, conn, fmt.Sprintf(schemaObjectsQuery, strings.Join(binds, ", ")), args...)
+		if err != nil {
+			return nil, err
+		}
+		objects := make(map[string]bool, len(found))
+		for _, name := range found {
+			objects[name] = true
+		}
+		return objects, nil
 	}
-	return `(?:` + quoted + `|(?i:` + regexp.QuoteMeta(name) + `)\b)`
 }
