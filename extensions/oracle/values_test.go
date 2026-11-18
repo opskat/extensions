@@ -147,7 +147,7 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("EMB", "VECTOR", nil))
 	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
 		`JSON_SERIALIZE("C""FG" RETURNING CLOB), FROM_VECTOR("EMB" RETURNING CLOB) ` +
-		`FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY`).
+		`FROM ` + emp + ` WHERE "ID" = 1 ORDER BY "ID" ASC OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
 			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),

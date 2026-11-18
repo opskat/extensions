@@ -58,8 +58,8 @@ func TestImportAppendAndCopy(t *testing.T) {
 		ExtendedInsert: true, MaxStatementSizeKB: 1,
 	}
 	insert := []string{
-		`INSERT INTO "HR"."EMP" ("ID", "NAME", "CODE", "BORN") VALUES ('1', 'O''Reilly', HEXTORAW('00ff'), '2024-01-02 03:04:05')`,
-		`INSERT INTO "HR"."EMP" ("ID", "NAME", "CODE", "BORN") VALUES ('2', NULL, NULL, NULL)`,
+		`INSERT INTO "HR"."EMP" ("ID", "NAME", "CODE", "BORN") VALUES (1, 'O''Reilly', HEXTORAW('00ff'), TO_DATE('2024-01-02 03:04:05', 'YYYY-MM-DD HH24:MI:SS'))`,
+		`INSERT INTO "HR"."EMP" ("ID", "NAME", "CODE", "BORN") VALUES (2, NULL, NULL, NULL)`,
 	}
 	assert.Equal(t, insert, importStatements(t, req))
 
@@ -82,16 +82,16 @@ func TestImportMerge(t *testing.T) {
 	}
 	const insert = `WHEN NOT MATCHED THEN INSERT ("ID", "NAME") VALUES (s."ID", s."NAME")`
 	assert.Equal(t, []string{
-		`MERGE INTO "HR"."EMP" t USING (SELECT '1' AS "ID", 'a' AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` +
+		`MERGE INTO "HR"."EMP" t USING (SELECT 1 AS "ID", 'a' AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` +
 			`WHEN MATCHED THEN UPDATE SET t."NAME" = s."NAME" ` + insert,
-		`MERGE INTO "HR"."EMP" t USING (SELECT '2' AS "ID", NULL AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` +
+		`MERGE INTO "HR"."EMP" t USING (SELECT 2 AS "ID", NULL AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` +
 			`WHEN MATCHED THEN UPDATE SET t."NAME" = s."NAME" ` + insert,
 	}, importStatements(t, req))
 
 	req.Mode = dbdriver.ImportAppendSkip
 	assert.Equal(t, []string{
-		`MERGE INTO "HR"."EMP" t USING (SELECT '1' AS "ID", 'a' AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` + insert,
-		`MERGE INTO "HR"."EMP" t USING (SELECT '2' AS "ID", NULL AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` + insert,
+		`MERGE INTO "HR"."EMP" t USING (SELECT 1 AS "ID", 'a' AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` + insert,
+		`MERGE INTO "HR"."EMP" t USING (SELECT 2 AS "ID", NULL AS "NAME" FROM DUAL) s ON (t."ID" = s."ID") ` + insert,
 	}, importStatements(t, req))
 }
 
@@ -102,7 +102,7 @@ func TestImportMergeWithoutUpdatableColumnsSkips(t *testing.T) {
 		Rows: [][]dbdriver.ImportValue{{text("1")}},
 	})
 	assert.Equal(t, []string{
-		`MERGE INTO "HR"."EMP" t USING (SELECT '1' AS "ID" FROM DUAL) s ON (t."ID" = s."ID") ` +
+		`MERGE INTO "HR"."EMP" t USING (SELECT 1 AS "ID" FROM DUAL) s ON (t."ID" = s."ID") ` +
 			`WHEN NOT MATCHED THEN INSERT ("ID") VALUES (s."ID")`,
 	}, statements)
 }

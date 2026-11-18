@@ -32,10 +32,12 @@ const minMajorVersion = 19
 const versionQuery = `SELECT VERSION FROM PRODUCT_COMPONENT_VERSION WHERE PRODUCT LIKE 'Oracle%' AND ROWNUM = 1`
 
 // dateFormatsStatement makes the session convert text to DATE, TIMESTAMP and
-// TIMESTAMP WITH TIME ZONE in the layout the grid shows them (values.go), so a
-// shown value written back or filtered by as a quoted literal converts exactly: FF9
-// reads any fraction up to nanoseconds, and a value shown without one too. With a
-// time zone the fraction's dot is X: under "SS.FF9" the "." took the sign of a
+// TIMESTAMP WITH TIME ZONE in the layout the grid shows them (values.go). Values
+// in that layout are written with their own explicit format (write.go) and do
+// not depend on it; it serves text in another layout that stays a quoted literal
+// (typed into the grid or a filter, read from an imported file) and the user's own
+// SQL: FF9 reads any fraction up to nanoseconds, and a value without one too. With
+// a time zone the fraction's dot is X: under "SS.FF9" the "." took the sign of a
 // negative offset when no fraction precedes it (-05:30 read as +05:30).
 const dateFormatsStatement = `ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' ` +
 	`NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SSXFF9 TZH:TZM'`

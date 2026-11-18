@@ -158,8 +158,8 @@ func TestIntegrationTableViewSortsBySpelledOutColumns(t *testing.T) {
 }
 
 // Filtering the table view by a time zone timestamp's shown value finds its row,
-// a negative offset without a fraction included (the session's format reads its
-// sign as the offset's, connect.go).
+// a negative offset without a fraction included (the value's TO_TIMESTAMP_TZ
+// format has no fraction then, so nothing takes the offset's sign, write.go).
 func TestIntegrationTableViewFiltersByShownTimeZoneValue(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
 		s, schema, table := writeSession(t, target, "OPSKAT_VAL_TZF",
@@ -220,7 +220,8 @@ func TestIntegrationQueryPanelValues(t *testing.T) {
 // Filtering the table view by the shown value of a time zone or local time zone
 // timestamp finds its rows with =, between and in-list, in the page, the count
 // and the export read: the filter values are written like grid-edit values, as
-// TO_TIMESTAMP_TZ, since a plain string needs the session's format (ORA-01830).
+// TO_TIMESTAMP_TZ in the shown layout (a plain string would need the session's
+// format, ORA-01830).
 func TestIntegrationTableViewFiltersByShownZonedTimestamps(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
 		s, schema, table := writeSession(t, target, "OPSKAT_VAL_ZF",
