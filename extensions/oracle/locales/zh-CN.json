@@ -1,6 +1,6 @@
 {
   "extension.displayName": "Oracle",
-  "extension.description": "为「SQL 数据库」资产提供 Oracle Database（19c 及以上）驱动：浏览 schema、执行 SQL、编辑表数据、导入导出",
+  "extension.description": "为「SQL 数据库」资产提供 Oracle Database（19c 及以上）驱动：浏览 schema、执行 SQL 与 SQL 文件、编辑表数据、导入导出",
 
   "driver.serviceName.label": "服务名",
   "driver.serviceName.desc": "要连接的数据库服务，如 ORCLPDB1；打开「按 SID 连接」时在这里填 SID",

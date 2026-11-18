@@ -48,6 +48,7 @@ func descriptor() dbdriver.Descriptor {
 			dbdriver.CapViewDDL, dbdriver.CapViews, dbdriver.CapProcedures, dbdriver.CapFunctions, dbdriver.CapTriggers,
 			dbdriver.CapGridEdit, dbdriver.CapImport, dbdriver.CapExportSQL, dbdriver.CapCopySQL,
 			dbdriver.CapCreateTable, dbdriver.CapDropTable, dbdriver.CapTruncateTable, dbdriver.CapAlterTable,
+			dbdriver.CapRunSQLFile,
 		},
 		// ROWID finds the one row to change or delete in a table without a
 		// primary key (write.go).

@@ -69,3 +69,19 @@ Use an ASCII password there; data in any language reads and writes correctly.
   reports a BOOLEAN as a plain NUMBER (a known limitation). The table view shows
   `true` / `false`.
 - Oracle errors come back as they are, with their `ORA-` number.
+
+## Running SQL files
+
+"Run SQL File…" on a schema runs a `.sql` file statement by statement on one
+connection, split as above; SQL Developer's "Export → Insert statements" files run
+as they are. Between statements, the file's SQL*Plus commands are handled as follows:
+
+- `SET` (except the SQL statements `SET TRANSACTION / ROLE / CONSTRAINTS`), `PROMPT`,
+  `REM[ARK]`, `SPOOL`, `CLEAR`, `COLUMN`, `TTITLE`, `BTITLE`, `SHOW` and a `/` with no
+  statement before it are skipped (one log line each).
+- `EXEC[UTE] call` runs as `BEGIN call; END;`.
+- `@` / `@@` / `START`, `WHENEVER`, `CONNECT`, `EXIT` / `QUIT`, `HOST` / `!`, `DEFINE`,
+  `UNDEFINE`, `ACCEPT`, `VARIABLE`, and a statement using an `&name` substitution
+  variable stop the run before them (the statements before have run); such a file
+  needs SQL*Plus. Put `SET DEFINE OFF` first when `&` is just text, as SQL Developer
+  does.

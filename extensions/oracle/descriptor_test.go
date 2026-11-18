@@ -119,3 +119,11 @@ func TestDescriptorDeclaresImport(t *testing.T) {
 	assert.False(t, togglesForeignKeys)
 	assert.False(t, d.CanDisableForeignKeyChecks)
 }
+
+// Run SQL File is declared because the dialect splits files itself: the host
+// offers it, and sqldb runs it, only then.
+func TestDescriptorDeclaresRunSQLFile(t *testing.T) {
+	_, splits := any(dialect{}).(dbdriver.ScriptSplitter)
+	require.True(t, splits)
+	assert.Equal(t, splits, descriptor().Supports(dbdriver.CapRunSQLFile))
+}

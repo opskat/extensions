@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"regexp"
@@ -20,33 +21,23 @@ import (
 // SQL*Plus. Text it cannot split (an unclosed quote or comment) is an error that
 // names the position.
 func splitOracle(_ context.Context, sql string) ([]dbdriver.Statement, error) {
-	masked, err := maskLiterals(sql)
-	if err != nil {
-		return nil, err
-	}
+	m := newMasker(sql, true)
 	var out []dbdriver.Statement
-	for pos := 0; pos < len(masked); {
-		start := skipBlank(masked, pos)
-		if start >= len(masked) {
+	for pos := 0; ; {
+		start := m.skipBlank(pos)
+		if start >= len(sql) {
 			break
 		}
-		if end, ok := loneSlashAt(masked, start); ok {
+		if end, ok := m.loneSlashAt(start); ok {
 			pos = end
 			continue
 		}
-		var end, next int
-		if plsqlStart.MatchString(masked[start:]) || declaresPLSQL(masked[start:]) {
-			end, next = blockEnd(masked, start)
-		} else {
-			end, next = plainEnd(masked, start)
+		end, next, closed := m.statementAt(start)
+		if !closed && m.open >= 0 {
+			return nil, cannotSplit(sql, m.open, m.what)
 		}
-		text := strings.TrimRight(masked[start:end], " \t\r\n")
-		if declaresPLSQL(text) {
-			text = strings.TrimRight(strings.TrimSuffix(text, ";"), " \t\r\n")
-		}
-		end = start + len(text)
 		if end > start {
-			out = append(out, classify(sql, masked, start, end))
+			out = append(out, classify(sql, m.b, start, end))
 		}
 		pos = next
 	}
@@ -62,94 +53,78 @@ var plsqlQueryStart = regexp.MustCompile(`(?i)^WITH\s+(?:FUNCTION|PROCEDURE)\s+(
 // declaresPLSQL reports whether the masked statement is a query whose WITH clause
 // declares a PL/SQL function or procedure ("WITH FUNCTION f RETURN …"), not one
 // whose subquery is named FUNCTION or PROCEDURE ("WITH function AS (…)").
-func declaresPLSQL(masked string) bool {
-	m := plsqlQueryStart.FindStringSubmatch(masked)
-	return m != nil && !strings.EqualFold(m[1], "AS")
+func declaresPLSQL(masked []byte) bool {
+	m := plsqlQueryStart.FindSubmatch(masked)
+	return m != nil && !bytes.EqualFold(m[1], []byte("AS"))
 }
 
 func isBlank(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
 
-func skipBlank(s string, i int) int {
-	for i < len(s) && isBlank(s[i]) {
-		i++
-	}
-	return i
+// masker masks SQL text as far as a scan has read it: comments are blanked and
+// the content of string literals and quoted identifiers (quotes included) is
+// replaced by 'q', so the scanners need not know about either. Newlines are
+// kept, so a line of the masked text is the same line of the text. Text from an
+// unterminated quote or comment on stays unmasked: the scanners stop at limit().
+//
+// The whole-text classifier (splitOracle) and the SQL file splitter
+// (splitScriptChunk) both scan with it. final says the text runs to the end of
+// its input; when it does not, a '/' line that reaches the end of the text may be
+// the start of a longer line and is no lone slash yet.
+type masker struct {
+	src   string
+	final bool
+	b     []byte // b[:done] is masked
+	done  int
+	open  int    // where an unterminated quote or comment opens, or -1
+	what  string // what opens there
 }
 
-// loneSlashAt reports whether the line holding byte i, from i on, is a '/' alone
-// on its line (masked has comments blanked), and where that line ends. i may be
-// the end of the text (a last line of blanks).
-func loneSlashAt(masked string, i int) (end int, ok bool) {
-	if i >= len(masked) || masked[i] != '/' {
-		return 0, false
-	}
-	if ls := strings.LastIndexByte(masked[:i], '\n') + 1; strings.TrimSpace(masked[ls:i]) != "" {
-		return 0, false
-	}
-	end = len(masked)
-	if nl := strings.IndexByte(masked[i:], '\n'); nl >= 0 {
-		end = i + nl
-	}
-	if strings.TrimSpace(masked[i:end]) != "/" {
-		return 0, false
-	}
-	return end, true
+func newMasker(src string, final bool) *masker {
+	return &masker{src: src, final: final, b: []byte(src), open: -1}
 }
 
-// plainEnd finds the end of the plain statement starting at start: its top-level
-// ';' or a lone-slash line, whichever comes first, else the end of the text.
-func plainEnd(masked string, start int) (end, next int) {
-	semi := strings.IndexByte(masked[start:], ';')
-	limit := len(masked)
-	if semi >= 0 {
-		limit = start + semi
-	}
-	for ls := start; ls < limit; {
-		nl := strings.IndexByte(masked[ls:limit], '\n')
-		if nl < 0 {
-			break
-		}
-		ls += nl + 1
-		if i := skipInLine(masked, ls); i < limit {
-			if e, ok := loneSlashAt(masked, i); ok {
-				return ls, e
-			}
-		}
-	}
-	if semi >= 0 {
-		return limit, limit + 1
-	}
-	return len(masked), len(masked)
-}
-
-func skipInLine(s string, i int) int {
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r') {
-		i++
-	}
-	return i
-}
-
-// blockEnd finds the end of the PL/SQL block starting at start: the first line
-// after its first that is a lone '/', else the end of the text.
-func blockEnd(masked string, start int) (end, next int) {
-	for ls := start; ; {
-		nl := strings.IndexByte(masked[ls:], '\n')
-		if nl < 0 {
-			return len(masked), len(masked)
-		}
-		ls += nl + 1
-		if e, ok := loneSlashAt(masked, skipInLine(masked, ls)); ok {
-			return ls, e
-		}
-	}
-}
-
-// maskLiterals returns a string of the same length as sql in which comments are
-// blanked and the content of string literals and quoted identifiers (quotes
-// included) is replaced by 'q', so the scanners need not know about either.
-// Newlines are kept. It fails on an unclosed quote or comment, naming where it opened.
+// maskLiterals returns sql masked as a whole. It fails on an unclosed quote or
+// comment, naming where it opened.
 func maskLiterals(sql string) (string, error) {
-	b := []byte(sql)
+	m := newMasker(sql, true)
+	m.upTo(len(sql))
+	if m.open >= 0 {
+		return "", cannotSplit(sql, m.open, m.what)
+	}
+	return string(m.b), nil
+}
+
+// upTo masks the text at least up to byte j, or up to an unterminated quote or
+// comment.
+func (m *masker) upTo(j int) {
+	j = min(j, len(m.src))
+	for m.done < j && m.open < 0 {
+		m.done = m.maskUnit(m.done)
+	}
+}
+
+// limit is where the masked text ends: the end of the text, or the unterminated
+// quote or comment.
+func (m *masker) limit() int {
+	if m.open >= 0 {
+		return m.open
+	}
+	return len(m.src)
+}
+
+// restart masks again from at on, as text outside any quote or comment: the
+// text before it (a client command line, whose quotes are no quotes) is used up.
+func (m *masker) restart(at int) {
+	if at < m.done {
+		copy(m.b[at:m.done], m.src[at:m.done])
+	}
+	m.done, m.open, m.what = at, -1, ""
+}
+
+// maskUnit masks the comment, quote or single byte at i and returns where the
+// next one starts; an unterminated quote or comment is recorded in open.
+func (m *masker) maskUnit(i int) int {
+	sql, b := m.src, m.b
 	fill := func(from, to int, ch byte) {
 		for k := from; k < to; k++ {
 			if b[k] != '\n' {
@@ -157,69 +132,201 @@ func maskLiterals(sql string) (string, error) {
 			}
 		}
 	}
-	for i := 0; i < len(sql); {
-		c := sql[i]
-		switch {
-		case c == '-' && strings.HasPrefix(sql[i:], "--"):
-			e := strings.IndexByte(sql[i:], '\n')
-			if e < 0 {
-				e = len(sql) - i
+	unterminated := func(what string) int {
+		m.open, m.what = i, what
+		return len(sql)
+	}
+	c := sql[i]
+	switch {
+	case c == '-' && strings.HasPrefix(sql[i:], "--"):
+		e := strings.IndexByte(sql[i:], '\n')
+		if e < 0 {
+			e = len(sql) - i
+		}
+		fill(i, i+e, ' ')
+		return i + e
+	case c == '/' && strings.HasPrefix(sql[i:], "/*"):
+		e := strings.Index(sql[i+2:], "*/")
+		if e < 0 {
+			return unterminated("comment")
+		}
+		fill(i, i+e+4, ' ')
+		return i + e + 4
+	case qQuoteAt(sql, i):
+		// q'<d>…<d>' with the closing delimiter of ([{< being )]}>; the
+		// delimiter may be a multibyte character.
+		d := i + 2 // index of the delimiter; one further for nq'
+		if sql[i] != 'q' && sql[i] != 'Q' {
+			d++
+		}
+		_, size := utf8.DecodeRuneInString(sql[d:])
+		closing := sql[d : d+size]
+		if k := strings.Index("([{<", closing); k >= 0 {
+			closing = ")]}>"[k : k+1]
+		}
+		e := strings.Index(sql[d+size:], closing+"'")
+		if e < 0 {
+			return unterminated("q-quoted string")
+		}
+		stop := d + size + e + len(closing) + 1
+		fill(i, stop, 'q')
+		return stop
+	case c == '\'' || c == '"':
+		// '' inside a string is an escaped quote; an identifier cannot hold a quote.
+		j := i + 1
+		for ; j < len(sql); j++ {
+			if sql[j] != c {
+				continue
 			}
-			fill(i, i+e, ' ')
-			i += e
-		case c == '/' && strings.HasPrefix(sql[i:], "/*"):
-			e := strings.Index(sql[i+2:], "*/")
-			if e < 0 {
-				return "", cannotSplit(sql, i, "comment")
+			if c == '\'' && j+1 < len(sql) && sql[j+1] == '\'' {
+				j++
+				continue
 			}
-			fill(i, i+e+4, ' ')
-			i += e + 4
-		case qQuoteAt(sql, i):
-			// q'<d>…<d>' with the closing delimiter of ([{< being )]}>; the
-			// delimiter may be a multibyte character.
-			d := i + 2 // index of the delimiter; one further for nq'
-			if sql[i] != 'q' && sql[i] != 'Q' {
-				d++
+			break
+		}
+		if j >= len(sql) {
+			if c == '"' {
+				return unterminated("quoted identifier")
 			}
-			_, size := utf8.DecodeRuneInString(sql[d:])
-			closing := sql[d : d+size]
-			if k := strings.Index("([{<", closing); k >= 0 {
-				closing = ")]}>"[k : k+1]
-			}
-			e := strings.Index(sql[d+size:], closing+"'")
-			if e < 0 {
-				return "", cannotSplit(sql, i, "q-quoted string")
-			}
-			stop := d + size + e + len(closing) + 1
-			fill(i, stop, 'q')
-			i = stop
-		case c == '\'' || c == '"':
-			// '' inside a string is an escaped quote; an identifier cannot hold a quote.
-			j := i + 1
-			for ; j < len(sql); j++ {
-				if sql[j] != c {
-					continue
-				}
-				if c == '\'' && j+1 < len(sql) && sql[j+1] == '\'' {
-					j++
-					continue
-				}
-				break
-			}
-			if j >= len(sql) {
-				what := "string"
-				if c == '"' {
-					what = "quoted identifier"
-				}
-				return "", cannotSplit(sql, i, what)
-			}
-			fill(i, j+1, 'q')
-			i = j + 1
-		default:
-			i++
+			return unterminated("string")
+		}
+		fill(i, j+1, 'q')
+		return j + 1
+	default:
+		return i + 1
+	}
+}
+
+// skipBlank returns the first byte from i on that is not blank once masked (a
+// comment is blank), or the limit.
+func (m *masker) skipBlank(i int) int {
+	for ; ; i++ {
+		m.upTo(i + 1)
+		if i >= m.limit() || !isBlank(m.b[i]) {
+			return i
 		}
 	}
-	return string(b), nil
+}
+
+// lineEnd is the index of the newline that ends the line holding byte i, or the
+// end of the text.
+func lineEnd(s string, i int) int {
+	if nl := strings.IndexByte(s[i:], '\n'); nl >= 0 {
+		return i + nl
+	}
+	return len(s)
+}
+
+// atLineStart reports whether only blanks (or comments) precede byte i, which
+// is masked, on its line.
+func (m *masker) atLineStart(i int) bool {
+	for k := i - 1; k >= 0 && m.b[k] != '\n'; k-- {
+		if !isBlank(m.b[k]) {
+			return false
+		}
+	}
+	return true
+}
+
+// loneSlashAt reports whether the line holding byte i, from i on, is a '/' alone
+// on its line, and where that line ends. i may be the end of the text (a last
+// line of blanks).
+func (m *masker) loneSlashAt(i int) (end int, ok bool) {
+	if i >= m.limit() {
+		return 0, false
+	}
+	m.upTo(i + 1)
+	if m.b[i] != '/' || !m.atLineStart(i) {
+		return 0, false
+	}
+	end = lineEnd(m.src, i)
+	if end == len(m.src) && !m.final {
+		return 0, false
+	}
+	m.upTo(end)
+	if end > m.limit() || string(bytes.TrimSpace(m.b[i:end])) != "/" {
+		return 0, false
+	}
+	return end, true
+}
+
+// statementAt finds the statement that starts at start (neither blank nor a lone
+// slash): end is where its text ends (trailing blanks and comments, and the
+// closing ';' of a query that declares PL/SQL, excluded), next where the text
+// after its terminator begins, and closed whether a terminator ended it rather
+// than the end of the masked text (limit).
+func (m *masker) statementAt(start int) (end, next int, closed bool) {
+	end, next, closed = m.plainEnd(start)
+	// The head that makes it a block precedes the first ';' or lone slash.
+	if head := m.b[start:end]; plsqlStart.Match(head) || declaresPLSQL(head) {
+		end, next, closed = m.blockEnd(start)
+	}
+	text := bytes.TrimRight(m.b[start:end], " \t\r\n")
+	if declaresPLSQL(text) {
+		text = bytes.TrimRight(bytes.TrimSuffix(text, []byte(";")), " \t\r\n")
+	}
+	return start + len(text), next, closed
+}
+
+// plainEnd finds the end of the plain statement starting at start: its top-level
+// ';' or a lone-slash line, whichever comes first, else the limit.
+func (m *masker) plainEnd(start int) (end, next int, closed bool) {
+	for ls := start; ; {
+		if ls > start {
+			if e, ok := m.loneSlashAt(m.skipInLine(ls)); ok {
+				return ls, e, true
+			}
+		}
+		i := m.indexEither(ls, ';', '\n')
+		if lim := m.limit(); i >= lim {
+			return lim, lim, false
+		}
+		if m.b[i] == ';' {
+			return i, i + 1, true
+		}
+		ls = i + 1
+	}
+}
+
+// indexEither is the first byte from i on that is c1 or c2 once masked, or the
+// limit.
+func (m *masker) indexEither(i int, c1, c2 byte) int {
+	for i < m.limit() {
+		m.upTo(i + 1)
+		for end := min(m.done, m.limit()); i < end; i++ {
+			if m.b[i] == c1 || m.b[i] == c2 {
+				return i
+			}
+		}
+	}
+	return m.limit()
+}
+
+// skipInLine returns the first byte from i on that is not a blank within the
+// line once masked.
+func (m *masker) skipInLine(i int) int {
+	for ; ; i++ {
+		m.upTo(i + 1)
+		if i >= m.limit() || (m.b[i] != ' ' && m.b[i] != '\t' && m.b[i] != '\r') {
+			return i
+		}
+	}
+}
+
+// blockEnd finds the end of the PL/SQL block starting at start: the first line
+// after its first that is a lone '/', else the limit.
+func (m *masker) blockEnd(start int) (end, next int, closed bool) {
+	for ls := start; ; {
+		le := lineEnd(m.src, ls)
+		m.upTo(le)
+		if lim := m.limit(); le >= lim {
+			return lim, lim, false
+		}
+		ls = le + 1
+		if e, ok := m.loneSlashAt(m.skipInLine(ls)); ok {
+			return ls, e, true
+		}
+	}
 }
 
 // qQuoteAt reports whether an alternative-quoting literal q'… / nq'… starts at i.
@@ -281,9 +388,9 @@ func tokenize(masked string) []token {
 }
 
 // classify builds the Statement for sql[start:end].
-func classify(sql, masked string, start, end int) dbdriver.Statement {
+func classify(sql string, masked []byte, start, end int) dbdriver.Statement {
 	st := dbdriver.Statement{Start: start, End: end, Text: sql[start:end]}
-	toks := tokenize(masked[start:end])
+	toks := tokenize(string(masked[start:end]))
 	first := ""
 	for i := 0; i < len(toks); i++ {
 		if toks[i].text == "(" {
