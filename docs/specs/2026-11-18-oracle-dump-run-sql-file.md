@@ -59,7 +59,7 @@ opskat issue #368 的后续。主仓库 PR opskat/opskat#382（分支 `feat/sql-
 - 外键：全部数据之后写出。
 - 视图、函数、过程、包：按依赖排序（`ALL_DEPENDENCIES`），被依赖的在前；包头在包体之前；视图写成 `CREATE OR REPLACE` 的完整定义；PL/SQL 单元以 `/` 结束。
 - 触发器：全部数据之后写出，保留启用 / 停用状态。
-- 收尾：标识列改回 `ALWAYS` 并对齐下一个值（决定 5）。
+- 标识列：每张表的数据之后立即改回 `ALWAYS` 并对齐下一个值（决定 5），在视图、程序与触发器建出之前，还原后不留下失效（INVALID）的对象（修正轮 1，用户批准）。
 
 **值的写法**：NUMBER 原样；CHAR / VARCHAR2 / NCHAR / NVARCHAR2 用字符串字面量；国家字符集类型含非 ASCII 字符时写成 `UNISTR` 转义（纯 ASCII 仍用 N 前缀），不经数据库字符集转换，非 Unicode 库（如 GBK）上也不丢字符（修正轮 1，用户批准），空串与 NULL 同为 NULL（Oracle 语义）；DATE / TIMESTAMP / TIMESTAMP WITH (LOCAL) TIME ZONE / INTERVAL 用显式格式的转换函数，保留小数秒与时区；RAW 用 `HEXTORAW`；CLOB / NCLOB / BLOB 见决定 6；BINARY_FLOAT / BINARY_DOUBLE 保留精度与特殊值。
 
