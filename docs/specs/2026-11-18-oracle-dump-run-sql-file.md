@@ -2,11 +2,11 @@
 
 > Status: Approved
 > Owner: OpsKat 维护者
-> Last updated: 2026-11-18
+> Last updated: 2026-11-18（修订：sqldb 按行写语句的钩子；日期类取值统一显式格式）
 
 **Objective:** Oracle 扩展 0.3.0 在 OpsKat 里提供与内置驱动相同的「转储 SQL 文件」与「运行 SQL 文件」：把 Oracle 用户（schema）里的表、视图、序列、函数、过程、包、触发器与数据转储成一个能还原的 `.sql` 文件，并能在任意 Oracle 用户下运行这样的文件（以及 SQL Developer 导出的文件）。
 
-**Hard invariant:** 0.2.0 已有的连接、浏览、查询、编辑、建改删表、导入导出、语句分类行为不变；只改 extensions 仓库的 `extensions/oracle`（以及随宿主升级而变的依赖与发布元数据），不改 OpsKat 主仓库。
+**Hard invariant:** 0.2.0 已有的连接、浏览、查询、编辑、建改删表、导入导出、语句分类行为不变，只有两处有意的变化：日期、时间戳、间隔值在「复制为 INSERT」「导出为 SQL」与表格编辑生成的语句里改为显式格式的转换函数（决定 11）；放不进一条字面量的 BLOB 行在这些地方写成 PL/SQL 块（决定 10）。**[用户决定]** 主仓库只改编进扩展 WASM 的共用 SQL 库 `pkg/dbdriver/sqldb`：新增一个可选的按行写语句钩子（决定 10），加在 opskat#382 的分支上；内置驱动行为不变、宿主 ABI 不变。其余只改 extensions 仓库的 `extensions/oracle`、发布工具的宿主依赖与发布元数据。
 
 ## 所处位置
 
@@ -40,6 +40,8 @@ opskat issue #368 的后续。主仓库 PR opskat/opskat#382（分支 `feat/sql-
 | 7 | **[用户决定]** 运行文件时 SQL*Plus / SQL Developer 的客户端指令：只影响客户端显示的跳过并在日志里记一笔；改变执行的停下 | SQL Developer 导出的文件开头就有 `SET DEFINE OFF`，应当能直接运行。Rejected: 一律停下 |
 | 8 | `EXEC` / `EXECUTE` 包成匿名块执行 | 脚本里常见、语义明确。Rejected: 当作不支持停下 |
 | 9 | **[用户决定]** 0.3.0 声明 `hostABI: "1.1"`、`minAppVersion` 为第一个含 opskat#382 的宿主版本；开发期依赖钉在 `feat/sql-dump-and-run` 的伪版本、用本地宿主验证；宿主发版后换成正式版本，再合并触发发布 | 旧版宿主装不上 1.1 的扩展，商店里在宿主发版前不能出现 0.3.0。Rejected: 做完就合并上架 |
+| 10 | **[用户决定]** 在 `pkg/dbdriver/sqldb` 加一个可选钩子：方言可以为某一行写出整条语句（包括 PL/SQL 块）代替默认的 INSERT；Oracle 用它把放不进字面量的 LOB 行写成「插入空 LOB 再分段 `DBMS_LOB.APPEND`」的块，以 `/` 结束 | [已核实] 行语句的形状由 sqldb 固定为 `INSERT … VALUES …;`（`pkg/dbdriver/sqldb/rows.go:131-135`），方言只能决定单个值的写法；CLOB 可用 `TO_CLOB` 拼接，BLOB 在 SQL 里不能拼接。sqldb 编进扩展的 WASM、不经宿主 ABI。Rejected: CLOB 拼接、大 BLOB 停下报错——不能还原 |
+| 11 | **[用户决定]** 日期、时间戳（含时区）、间隔值统一写成显式格式的 `TO_DATE` / `TO_TIMESTAMP` / `TO_TIMESTAMP_TZ` / `TO_DSINTERVAL` / `TO_YMINTERVAL`，转储、复制为 INSERT、导出为 SQL、表格编辑一致 | 文件在 SQL*Plus 等外部工具里导入也不依赖 NLS；同一种写法，不分叉。[已核实] 现在写成依赖会话 NLS 的字符串（`extensions/oracle/write.go:68-92`，NLS 在连接时设定 `connect.go:40`）。Rejected: 保持现有写法——文件离开 OpsKat 可能因 NLS 不同而导入失败 |
 
 ## 能力声明
 
@@ -71,7 +73,7 @@ opskat issue #368 的后续。主仓库 PR opskat/opskat#382（分支 `feat/sql-
 
 ## 发布
 
-`manifest.json`：`version` 0.3.0、`hostABI` 1.1、`minAppVersion` 为第一个含 opskat#382 的宿主版本。开发与验证期间 `go.mod` 依赖 `github.com/opskat/opskat` 的 `feat/sql-dump-and-run` 伪版本；opskat 发版后换成正式版本、更新 `minAppVersion`，再合并本轮 PR，由仓库现有的发布流程上架。旧版宿主（ABI 1.0）的用户在商店里仍得到 0.2.0。
+`manifest.json`：`version` 0.3.0、`hostABI` 1.1、`minAppVersion` 为第一个含 opskat#382 的宿主版本。开发与验证期间 `extensions/oracle/go.mod` 与发布工具 `tools/publish/go.mod` 都依赖 `github.com/opskat/opskat` 的 `feat/sql-dump-and-run` 伪版本（[已核实] 发布工具钉的 v1.15.0 只认 hostABI 1.0，`make index-check` 与发布会拒绝 0.3.0）；opskat 发版后换成正式版本、更新 `minAppVersion`，再合并本轮 PR，由仓库现有的发布流程上架。旧版宿主（ABI 1.0）的用户在商店里仍得到 0.2.0。
 
 ## Out of scope
 
