@@ -98,8 +98,10 @@ user — it names neither the source schema nor any tablespace or storage:
 - each table's `CREATE TABLE` with its constraints, identity columns and comments,
   then the indexes no constraint creates;
 - with data, one `INSERT` per row (no virtual columns); a `GENERATED ALWAYS`
-  identity column is `BY DEFAULT` while its rows go in, and every identity column
-  continues past the rows afterwards (one of an empty table keeps its `START WITH`);
+  identity column is `BY DEFAULT` while its rows go in, and right after them every
+  identity column is as defined again and continues past the rows (one of an empty
+  table keeps its `START WITH`) — before any view or trigger exists, so none is
+  left invalid;
 - the foreign keys after all data: Oracle cannot turn foreign key checks off, so
   "disable foreign key checks" is not offered;
 - for a whole schema, its views (each a complete `CREATE OR REPLACE`), functions,

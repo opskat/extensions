@@ -42,27 +42,37 @@ func grantPrograms(t *testing.T, admin *sql.DB, name string) {
 // the schema; listed before it), a row trigger using a sequence (typed with the
 // schema, on its table typed with the schema), a disabled statement trigger
 // (lower case, on its table with the schema) and a materialized view, which the
-// dump leaves out. The rows go in before the triggers exist: a
+// dump leaves out. The view joins ITEMS with CATEGORIES, a GENERATED ALWAYS
+// identity table (its key referenced by ITEMS) with an enabled row trigger and a
+// disabled statement trigger: switching its identity back after the rows
+// invalidates what depends on it. The rows go in before the triggers exist: a
 // trigger firing on the restored rows would mark them.
 func programsFixture(owner string) []string {
 	return []string{
 		"CREATE SEQUENCE ITEM_SEQ START WITH 100",
-		"CREATE TABLE ITEMS (ID NUMBER PRIMARY KEY, PRICE NUMBER, SOURCE VARCHAR2(10))",
+		"CREATE TABLE CATEGORIES (ID NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, NAME VARCHAR2(20))",
+		"CREATE TABLE ITEMS (ID NUMBER PRIMARY KEY, PRICE NUMBER, SOURCE VARCHAR2(10), CATEGORY_ID NUMBER REFERENCES CATEGORIES)",
 		"CREATE TABLE ITEMS_LOG (ID NUMBER, EVENT VARCHAR2(10))",
-		"INSERT INTO ITEMS VALUES (1, 5, 'FIXTURE')",
-		"INSERT INTO ITEMS VALUES (2, 50, 'FIXTURE')",
+		"INSERT INTO CATEGORIES (NAME) VALUES ('Books')",
+		"INSERT INTO CATEGORIES (NAME) VALUES ('Tools')",
+		"INSERT INTO ITEMS VALUES (1, 5, 'FIXTURE', 1)",
+		"INSERT INTO ITEMS VALUES (2, 50, 'FIXTURE', 2)",
 		"CREATE OR REPLACE FUNCTION " + owner + ".F_TAX(p NUMBER) RETURN NUMBER IS\nBEGIN\n  RETURN p * 0.1;\nEND;",
 		"CREATE OR REPLACE PACKAGE UTIL_PKG AS\n  PROCEDURE log(p_id NUMBER, p_event VARCHAR2);\nEND util_pkg;",
 		"CREATE OR REPLACE PACKAGE BODY UTIL_PKG AS\n  PROCEDURE log(p_id NUMBER, p_event VARCHAR2) IS\n  BEGIN\n" +
 			"    INSERT INTO " + owner + ".items_log VALUES (p_id, p_event);\n  END;\nEND util_pkg;",
 		"CREATE OR REPLACE PROCEDURE P_RUN AS\nBEGIN\n  " + strings.ToLower(owner) + ".util_pkg.log(0, 'run');\nEND;",
-		"CREATE VIEW V_ITEMS AS SELECT id, price, f_tax(price) tax FROM \"" + owner + "\".items",
+		"CREATE VIEW V_ITEMS AS SELECT i.id, i.price, f_tax(i.price) tax, c.name category FROM \"" + owner + "\".items i " +
+			"LEFT JOIN categories c ON c.id = i.category_id",
 		"CREATE VIEW V_EXP (ID, TAX) AS SELECT id, tax FROM v_items WHERE price > 10",
 		"CREATE MATERIALIZED VIEW ITEMS_MV AS SELECT id, price FROM items",
 		"CREATE TRIGGER " + owner + ".TRG_BI BEFORE INSERT ON " + owner + ".ITEMS FOR EACH ROW\nBEGIN\n" +
 			"  IF :new.id IS NULL THEN :new.id := item_seq.nextval; END IF;\n  :new.source := 'TRIGGER';\nEND;",
 		"create trigger trg_stmt after update on " + strings.ToLower(owner) + ".items\nbegin\n  util_pkg.log(-1, 'update');\nend;",
 		"ALTER TRIGGER TRG_STMT DISABLE",
+		"CREATE TRIGGER TRG_CAT_BI BEFORE INSERT ON CATEGORIES FOR EACH ROW\nBEGIN\n  :new.name := UPPER(:new.name);\nEND;",
+		"CREATE TRIGGER TRG_CAT_AUDIT AFTER UPDATE ON CATEGORIES\nBEGIN\n  util_pkg.log(-2, 'category');\nEND;",
+		"ALTER TRIGGER TRG_CAT_AUDIT DISABLE",
 	}
 }
 
@@ -119,7 +129,8 @@ func programRows(t *testing.T, admin *sql.DB, owner string) []string {
 	t.Helper()
 	schema := quoteIdent(owner)
 	return slices.Concat(
-		textRows(t, admin, "SELECT TO_CHAR(ID), TO_CHAR(PRICE), SOURCE FROM "+schema+".ITEMS ORDER BY ID"),
+		textRows(t, admin, "SELECT TO_CHAR(ID), NAME FROM "+schema+".CATEGORIES ORDER BY ID"),
+		textRows(t, admin, "SELECT TO_CHAR(ID), TO_CHAR(PRICE), SOURCE, TO_CHAR(CATEGORY_ID) FROM "+schema+".ITEMS ORDER BY ID"),
 		textRows(t, admin, "SELECT TO_CHAR(ID), EVENT FROM "+schema+".ITEMS_LOG ORDER BY ID, EVENT"))
 }
 
@@ -145,7 +156,7 @@ func TestIntegrationDumpProgramsRoundTrip(t *testing.T) {
 		}
 		programs, tables, rows := programShape(t, admin, srcName), schemaShape(t, admin, srcName), programRows(t, admin, srcName)
 		require.Len(t, textRows(t, admin, "SELECT object_name FROM all_objects WHERE owner = "+sqlString(srcName)+
-			" AND object_type IN ("+programTypes+") AND status = 'VALID'"), 8)
+			" AND object_type IN ("+programTypes+") AND status = 'VALID'"), 10)
 
 		var out bytes.Buffer
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -173,6 +184,7 @@ func TestIntegrationDumpProgramsRoundTrip(t *testing.T) {
 		assert.Contains(t, ddl, quoteIdent(srcName)+`."V_ITEMS"`)
 
 		runOK(t, dst, dstName, file)
+		assert.Empty(t, invalidObjects(t, admin, dstName))
 		assert.Equal(t, programs, programShape(t, admin, dstName))
 		assert.Equal(t, withoutMaterializedView(tables), schemaShape(t, admin, dstName))
 		assert.Equal(t, rows, programRows(t, admin, dstName))
@@ -192,10 +204,23 @@ func TestIntegrationDumpProgramsRoundTrip(t *testing.T) {
 		}
 		require.NotEqual(t, programs, programShape(t, admin, srcName))
 		runOK(t, src, srcName, file)
+		// The materialized view is not in the file: its table dropped, it stays invalid.
+		assert.Empty(t, invalidObjects(t, admin, srcName, "ITEMS_MV"))
 		assert.Equal(t, programs, programShape(t, admin, srcName))
 		assert.Equal(t, tables, schemaShape(t, admin, srcName))
 		assert.Equal(t, rows, programRows(t, admin, srcName))
 	})
+}
+
+// invalidObjects is owner's objects that are not VALID, read from the
+// dictionary only (using a view or firing a trigger would recompile it), but the
+// copies a drop leaves in the recycle bin and the objects named in notRestored,
+// which a run over the original leaves as they were.
+func invalidObjects(t *testing.T, admin *sql.DB, owner string, notRestored ...string) []string {
+	t.Helper()
+	return slices.DeleteFunc(textRows(t, admin, "SELECT object_name, object_type, status FROM all_objects WHERE owner = "+
+		sqlString(owner)+" AND status <> 'VALID' AND object_name NOT LIKE 'BIN$%' ORDER BY object_name, object_type"),
+		func(row string) bool { name, _, _ := strings.Cut(row, "|"); return slices.Contains(notRestored, name) })
 }
 
 // withoutMaterializedView is a schema shape without the fixture's materialized

@@ -195,8 +195,8 @@ func runDump(t *testing.T, session *sqldb.Session, source dumpSource, req dbdriv
 // ending in /), the schema's own sequences starting at their current value,
 // schema-less tables with their comments and separate indexes, a sequence
 // default without the schema, an identity column switched to BY DEFAULT for its
-// rows, rows without the virtual column, the foreign keys after all data and the
-// identity back to ALWAYS with its next value past the rows.
+// rows and right after them back to ALWAYS with its next value past them, rows
+// without the virtual column and the foreign keys after all data.
 func TestDumpSchemaGolden(t *testing.T) {
 	dumpGolden(t, "dump_schema.sql", schemaDump(t))
 }
@@ -319,7 +319,9 @@ var (
 // (a package called, a view's table, a trigger's ON clause) keep it, and the
 // trigger's state follows as an ALTER.
 const (
-	itemsDDL   = "\n  CREATE TABLE \"ITEMS\" (\"ID\" NUMBER PRIMARY KEY, \"PRICE\" NUMBER) \n  "
+	itemsDDL      = "\n  CREATE TABLE \"ITEMS\" (\"ID\" NUMBER PRIMARY KEY, \"PRICE\" NUMBER) \n  "
+	categoriesDDL = "\n  CREATE TABLE \"CATEGORIES\" (\"ID\" NUMBER GENERATED ALWAYS AS IDENTITY MINVALUE 1 START WITH 1 NOT NULL ENABLE, " +
+		"\"NAME\" VARCHAR2(20), PRIMARY KEY (\"ID\") USING INDEX ENABLE) \n  "
 	fTaxDDL    = "\n  CREATE OR REPLACE EDITIONABLE FUNCTION \"F_TAX\" (p NUMBER) RETURN NUMBER IS\nBEGIN\n  RETURN p * 0.1;\nEND;\n"
 	pkgSpecDDL = "\n  CREATE OR REPLACE EDITIONABLE PACKAGE \"UTIL_PKG\" AS\n  PROCEDURE log(msg VARCHAR2);\nEND util_pkg;\n"
 	pkgBodyDDL = "\n  CREATE OR REPLACE EDITIONABLE PACKAGE BODY \"UTIL_PKG\" AS\n  PROCEDURE log(msg VARCHAR2) IS BEGIN NULL; END;\nEND util_pkg;\n"
@@ -361,9 +363,39 @@ func expectTrigger(mock sqlmock.Sqlmock, name, ddl string) {
 // exist". The views are the ones ListObjects lists (Oracle's ListTables lists
 // tables only); a materialized view among them is left out.
 func TestDumpProgramsGolden(t *testing.T) {
+	dumpGolden(t, "programs/dump_schema.sql", programsDump(t))
+}
+
+// An identity column is back to GENERATED ALWAYS and continues past the rows
+// right after its table's rows, before any view, unit or trigger exists: the
+// ALTER invalidates what depends on the table, and a disabled trigger would stay
+// invalid until compiled.
+func TestDumpSwitchesIdentityBackBeforeThePrograms(t *testing.T) {
+	file := string(programsDump(t))
+	switchBack := strings.Index(file, `'ALTER TABLE "CATEGORIES" MODIFY ("ID" GENERATED ALWAYS AS IDENTITY (START WITH LIMIT VALUE))'`)
+	require.Positive(t, switchBack)
+	assert.Less(t, strings.Index(file, "Records of CATEGORIES"), switchBack)
+	assert.Less(t, switchBack, strings.Index(file, "Table structure for ITEMS"))
+	assert.Less(t, switchBack, strings.Index(file, "Function structure for F_TAX"))
+}
+
+// programsDump is the whole schema HR with its programs and data
+// (TestDumpProgramsGolden): a GENERATED ALWAYS identity table CATEGORIES, a
+// table ITEMS and the programs on ITEMS.
+func programsDump(t *testing.T) []byte {
+	t.Helper()
 	session, mock := newDumpMock(t)
 	mock.ExpectQuery(sequencesPattern).WithArgs("HR").WillReturnRows(rowsOf(sequenceColumns,
 		[]any{"ITEM_SEQ", "1", "9999999999999999999999999999", "1", "N", "N", "20", "1"}))
+	expectTableMetadata(mock, "CATEGORIES", categoriesDDL)
+	mock.ExpectQuery(sequenceUsersPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(rowsOf(defaultColumns))
+	mock.ExpectQuery(commentsPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(rowsOf(commentColumns))
+	mock.ExpectQuery(foreignKeysPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(rowsOf(foreignKeyColumns))
+	mock.ExpectQuery(dumpColumnsPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(rowsOf(dumpColumnColumns,
+		[]any{"ID", "NO", "ALWAYS", "NO"}, []any{"NAME", "NO", nil, "NO"}))
+	mock.ExpectQuery(rowColumnsPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(columnRows().
+		AddRow("ID", "NUMBER", "NO", nil, nil, 1, 1, 1).
+		AddRow("NAME", "VARCHAR2(20)", "YES", nil, nil, 0, 0, 0))
 	expectTableMetadata(mock, "ITEMS", itemsDDL)
 	mock.ExpectQuery(sequenceUsersPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(defaultColumns))
 	mock.ExpectQuery(commentsPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(commentColumns))
@@ -392,7 +424,7 @@ func TestDumpProgramsGolden(t *testing.T) {
 	expectTrigger(mock, "TRG_STMT", trgStmtDDL)
 
 	source := dumpSource{
-		Session: session, tables: []string{"ITEMS"},
+		Session: session, tables: []string{"CATEGORIES", "ITEMS"},
 		objects: dbdriver.DatabaseObjects{
 			Views: []dbdriver.ObjectMeta{
 				{Name: "ITEMS_MV", Type: dbdriver.ObjectView}, {Name: "V_EXP", Type: dbdriver.ObjectView}, {Name: "V_ITEMS", Type: dbdriver.ObjectView},
@@ -405,14 +437,17 @@ func TestDumpProgramsGolden(t *testing.T) {
 				{Name: "TRG_BI", Type: dbdriver.ObjectTrigger}, {Name: "TRG_STMT", Type: dbdriver.ObjectTrigger},
 			},
 		},
-		rows: map[string]*sliceStream{"ITEMS": {columns: []string{"ID", "PRICE"}, rows: [][]any{{"1", "12.5"}}}},
+		rows: map[string]*sliceStream{
+			"CATEGORIES": {columns: []string{"ID", "NAME"}, rows: [][]any{{"1", "Books"}}},
+			"ITEMS":      {columns: []string{"ID", "PRICE"}, rows: [][]any{{"1", "12.5"}}},
+		},
 	}
 	got := runDump(t, session, source, dbdriver.DumpRequest{
 		Database: "HR", Whole: true, WithData: true,
 		Options: dbdriver.DumpOptions{Views: true, Routines: true, Triggers: true, Drops: true},
 	})
-	dumpGolden(t, "programs/dump_schema.sql", got)
 	require.NoError(t, mock.ExpectationsWereMet())
+	return got
 }
 
 // A name of the schema's own objects loses the schema however it was typed
