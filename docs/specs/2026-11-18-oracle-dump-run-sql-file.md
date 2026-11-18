@@ -61,7 +61,7 @@ opskat issue #368 的后续。主仓库 PR opskat/opskat#382（分支 `feat/sql-
 - 触发器：全部数据之后写出，保留启用 / 停用状态。
 - 收尾：标识列改回 `ALWAYS` 并对齐下一个值（决定 5）。
 
-**值的写法**：NUMBER 原样；CHAR / VARCHAR2 / NCHAR / NVARCHAR2 用字符串字面量（N 前缀用于国家字符集类型），空串与 NULL 同为 NULL（Oracle 语义）；DATE / TIMESTAMP / TIMESTAMP WITH (LOCAL) TIME ZONE / INTERVAL 用显式格式的转换函数，保留小数秒与时区；RAW 用 `HEXTORAW`；CLOB / NCLOB / BLOB 见决定 6；BINARY_FLOAT / BINARY_DOUBLE 保留精度与特殊值。
+**值的写法**：NUMBER 原样；CHAR / VARCHAR2 / NCHAR / NVARCHAR2 用字符串字面量；国家字符集类型含非 ASCII 字符时写成 `UNISTR` 转义（纯 ASCII 仍用 N 前缀），不经数据库字符集转换，非 Unicode 库（如 GBK）上也不丢字符（修正轮 1，用户批准），空串与 NULL 同为 NULL（Oracle 语义）；DATE / TIMESTAMP / TIMESTAMP WITH (LOCAL) TIME ZONE / INTERVAL 用显式格式的转换函数，保留小数秒与时区；RAW 用 `HEXTORAW`；CLOB / NCLOB / BLOB 见决定 6；BINARY_FLOAT / BINARY_DOUBLE 保留精度与特殊值。
 
 **只转储选中的表时**：写这些表本身，以及这些表的列默认值引用的序列（否则建表失败）；没有视图、程序与触发器（与宿主一致）。
 
