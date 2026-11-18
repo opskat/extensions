@@ -365,11 +365,14 @@ func TestLargeLobBlockKeepsTheInsertModifier(t *testing.T) {
 // database character set, which loses what that set lacks (an emoji, ï and ø in
 // ZHS16GBK): a value with any character outside ASCII is UNISTR of its escapes,
 // \XXXX per UTF-16 unit (a supplementary character a surrogate pair), a backslash
-// \005C and quotes doubled. An ASCII value stays N'…'; other text is unchanged.
+// \005C and quotes doubled; an NCHAR's is cast to NCHAR of its length in UTF-16
+// units, so that it compares blank-padded with an NCHAR column as N'…' does. An
+// ASCII value stays N'…'; other text is unchanged.
 func TestNationalTextIsWrittenAsUnicodeEscapes(t *testing.T) {
 	for _, tc := range []struct{ name, columnType, value, want string }{
 		{"emoji and characters outside GBK", "NVARCHAR2(100)", `张三😀 ï\ø's`, `UNISTR('\5F20\4E09\D83D\DE00 \00EF\005C\00F8''s')`},
-		{"NCHAR", "NCHAR(4)", "ï", `UNISTR('\00EF')`},
+		{"NCHAR", "NCHAR(4)", "ï", `CAST(UNISTR('\00EF') AS NCHAR(1))`},
+		{"NCHAR with a supplementary character", "NCHAR(4)", "😀a", `CAST(UNISTR('\D83D\DE00a') AS NCHAR(3))`},
 		{"NCLOB", "NCLOB", "😀", `UNISTR('\D83D\DE00')`},
 		{"ASCII national text", "NVARCHAR2(20)", `it's \n`, `N'it''s \n'`},
 		{"VARCHAR2", "VARCHAR2(20 CHAR)", "中文😀", `'中文😀'`},
@@ -404,6 +407,15 @@ func TestLongNationalTextIsSplitIntoUnistrPieces(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, unistr("a", 2000)+" || "+unistr(`\00F8`, 1), got)
 
+	// An NCHAR of pieces is cast as a whole; one longer than any NCHAR (1000
+	// UTF-16 units) is not cast, which Oracle would refuse (ORA-00910).
+	got, err = literals.Literal(strings.Repeat("ø", 1000), "NCHAR(1000)")
+	require.NoError(t, err)
+	assert.Equal(t, "CAST(("+unistr(`\00F8`, 800)+" || "+unistr(`\00F8`, 200)+") AS NCHAR(1000))", got)
+	got, err = literals.Literal(strings.Repeat("ø", 1001), "NCHAR(1000)")
+	require.NoError(t, err)
+	assert.Equal(t, unistr(`\00F8`, 800)+" || "+unistr(`\00F8`, 201), got)
+
 	got, err = literals.Literal(strings.Repeat("ø", 801), "NCLOB")
 	require.NoError(t, err)
 	assert.Equal(t, "TO_NCLOB("+unistr(`\00F8`, 800)+") || TO_NCLOB("+unistr(`\00F8`, 1)+")", got)
@@ -421,7 +433,7 @@ func TestGridEditStatementsWriteNationalTextAsUnicodeEscapes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{`UPDATE "HR"."VALS" SET "NVC" = UNISTR('\5F20\4E09\D83D\DE00') ` +
-		`WHERE ROWID = (SELECT ROWID FROM "HR"."VALS" WHERE "ID" = 1 AND "NCH" = UNISTR('\00EF') FETCH FIRST 1 ROW ONLY)`},
+		`WHERE ROWID = (SELECT ROWID FROM "HR"."VALS" WHERE "ID" = 1 AND "NCH" = CAST(UNISTR('\00EF') AS NCHAR(1)) FETCH FIRST 1 ROW ONLY)`},
 		statements.Updates)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

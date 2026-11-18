@@ -277,6 +277,16 @@ func TestIntegrationDumpNationalValuesRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 1)
 
+		// A filter on the NCHAR with its value as typed, not blank-padded, finds its
+		// row too, as N'...' and a plain string compare blank-padded with NCHAR.
+		for _, value := range []string{`ïø😀\中`, "ø"} {
+			page, err := src.TableRows(integrationContext(t), srcName, "NATS", dbdriver.TableQuery{
+				Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Column: "NCH", Operator: dbdriver.OpEqual, Value: value}},
+			}, dbdriver.Page{Index: 0, Size: 10})
+			require.NoError(t, err)
+			assert.Len(t, page.Rows, 1, "NCH = %q", value)
+		}
+
 		// Copy as INSERT of that row, run in the query editor.
 		writer, err := src.PrepareRowStatements(integrationContext(t), srcName, "NATS")
 		require.NoError(t, err)

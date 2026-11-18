@@ -147,6 +147,11 @@ func formattedLiteral(columnType, text string) (string, bool) {
 // NCLOB's pieces each converted with TO_NCLOB, since a concatenation of NVARCHAR2
 // holds 4000 bytes (ORA-01489) and one of NCLOBs any size. ASCII text is not
 // converted on its way to the national character set, so it stays N'...' (ok false).
+// An NCHAR's literal is cast to NCHAR of the text's length: UNISTR gives an NVARCHAR2,
+// which an NCHAR column compares with unpadded (a filter on '中文' would not find
+// the NCHAR(10) value), while N'...' and a plain string compare blank-padded. A
+// text longer than an NCHAR can be (maxNcharUnits) fits no NCHAR column and is
+// left uncast, which CAST would refuse (ORA-00910).
 func nationalLiteral(name, text string) (string, bool) {
 	if isASCII(text) {
 		return "", false
@@ -158,8 +163,18 @@ func nationalLiteral(name, text string) (string, bool) {
 			pieces[i] = "TO_NCLOB(" + pieces[i] + ")"
 		}
 	}
-	return strings.Join(pieces, " || "), true
+	literal := strings.Join(pieces, " || ")
+	if units := len(utf16.Encode([]rune(text))); name == "NCHAR" && units <= maxNcharUnits {
+		if len(pieces) > 1 {
+			literal = "(" + literal + ")"
+		}
+		literal = "CAST(" + literal + " AS NCHAR(" + strconv.Itoa(units) + "))"
+	}
+	return literal, true
 }
+
+// maxNcharUnits is the longest NCHAR in UTF-16 units: 2000 bytes in AL16UTF16.
+const maxNcharUnits = 1000
 
 func isASCII(text string) bool {
 	for i := 0; i < len(text); i++ {
