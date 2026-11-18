@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/opskat/opskat/pkg/dbdriver"
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
@@ -82,7 +85,7 @@ func sameLobs(t *testing.T, admin *sql.DB, src, dst string) []string {
 // A table with every value type dumped with its data runs into another user and
 // holds the same values: the statements spell each value with an explicit format
 // (the file also runs after the session's NLS formats and decimal separator are
-// changed), national text with N, binary floats' special values as constants,
+// changed), national text as UNISTR escapes, binary floats' special values as constants,
 // and the row with large LOBs as a PL/SQL block. The same block, copied as
 // INSERT and run as a statement, recreates the row.
 func TestIntegrationDumpValuesRoundTrip(t *testing.T) {
@@ -108,7 +111,7 @@ func TestIntegrationDumpValuesRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		file := out.String()
 		for _, want := range []string{"TO_DATE('", "TO_TIMESTAMP('", "TO_TIMESTAMP_TZ('", "TO_DSINTERVAL('", "TO_YMINTERVAL('",
-			"N'中文", "BINARY_FLOAT_NAN", "-BINARY_DOUBLE_INFINITY", "EMPTY_BLOB()", "DBMS_LOB.APPEND(l2, TO_NCLOB(N'",
+			`UNISTR('\4E2D\6587`, "BINARY_FLOAT_NAN", "-BINARY_DOUBLE_INFINITY", "EMPTY_BLOB()", "DBMS_LOB.APPEND(l2, TO_NCLOB(UNISTR('",
 			"DBMS_LOB.WRITEAPPEND(l3, 2000, HEXTORAW('", "\nEND;\n/\n"} {
 			assert.Contains(t, file, want)
 		}
@@ -143,5 +146,164 @@ func TestIntegrationDumpValuesRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, rows, valueRows(t, admin, dstName))
 		assert.Equal(t, same, sameLobs(t, admin, srcName, dstName))
+	})
+}
+
+// nationalTableDDL is a table of the national character set's types.
+const nationalTableDDL = "CREATE TABLE NATS (ID NUMBER PRIMARY KEY, NCH NCHAR(10), NVC NVARCHAR2(2000), NC NCLOB)"
+
+// nationalFixture fills NATS without N'...' literals, which a ZHS16GBK database
+// converts through GBK: in UNISTR escapes, an emoji, ï and ø (outside GBK), a
+// backslash, quotes and Chinese; in row 2 an NVARCHAR2 at its 2000 characters
+// (4000 bytes) of them, and an NCLOB of about 66,000 characters whose repeated
+// part escapes to 27 bytes, so that a 4000-byte piece ends 4 bytes short of an
+// emoji's 10, with runs of 1500 ASCII characters among it; in row 3 ASCII text
+// with backslashes.
+var nationalFixture = []string{
+	`INSERT INTO NATS VALUES (1, UNISTR('\00EF\00F8\D83D\DE00\005C\4E2D'), ` +
+		`UNISTR('\5F20\4E09\D83D\DE00 \00EF\00F8 a\005Cb ''q'' \4E2D\6587'), TO_NCLOB(UNISTR('\D83D\DE00 \00EF\005C\00F8 \4E2D')))`,
+	`DECLARE v NVARCHAR2(2000); n NCLOB; BEGIN DBMS_LOB.CREATETEMPORARY(n, TRUE); ` +
+		`FOR i IN 1..666 LOOP v := v || UNISTR('\00EF\D83D\DE00'); END LOOP; v := v || UNISTR('\4E2D\005C'); ` +
+		`FOR i IN 1..3000 LOOP DBMS_LOB.APPEND(n, TO_NCLOB(UNISTR('\D83D\DE00\00EF\4E2Dab\005C'))); ` +
+		`IF MOD(i, 100) = 0 THEN DBMS_LOB.APPEND(n, TO_NCLOB(RPAD(UNISTR('x'), 1500, UNISTR('x')))); END IF; END LOOP; ` +
+		`INSERT INTO NATS VALUES (2, UNISTR('\00F8'), v, n); END;`,
+	`INSERT INTO NATS (ID, NCH, NVC) VALUES (3, UNISTR('a\005Cb'), UNISTR('C:\005Cpath\005C''x'''))`,
+}
+
+// nationalValues is what nationalFixture writes, per row its NCHAR (padded to
+// 10 UTF-16 units), NVARCHAR2 and NCLOB ("" for NULL).
+func nationalValues() [][3]string {
+	var nclob strings.Builder
+	for i := 1; i <= 3000; i++ {
+		nclob.WriteString(`😀ï中ab\`)
+		if i%100 == 0 {
+			nclob.WriteString(strings.Repeat("x", 1500))
+		}
+	}
+	nchar := func(text string) string { return text + strings.Repeat(" ", 10-len(utf16.Encode([]rune(text)))) }
+	return [][3]string{
+		{nchar(`ïø😀\中`), `张三😀 ïø a\b 'q' 中文`, `😀 ï\ø 中`},
+		{nchar("ø"), strings.Repeat("ï😀", 666) + `中\`, nclob.String()},
+		{nchar(`a\b`), `C:\path\'x'`, ""},
+	}
+}
+
+// nationalHash is the SHA-256 of text in AL16UTF16, as STANDARD_HASH gives it of
+// an NCHAR / NVARCHAR2 value.
+func nationalHash(text string) string {
+	var b []byte
+	for _, unit := range utf16.Encode([]rune(text)) {
+		b = append(b, byte(unit>>8), byte(unit))
+	}
+	sum := sha256.Sum256(b)
+	return strings.ToUpper(hex.EncodeToString(sum[:]))
+}
+
+// nationalRows is owner's NATS by the national bytes of its NCHAR and NVARCHAR2
+// values, the NVARCHAR2's length and the NCLOB's, in UTF-16 units.
+func nationalRows(t *testing.T, admin *sql.DB, owner string) []string {
+	t.Helper()
+	return textRows(t, admin, "SELECT ID, RAWTOHEX(STANDARD_HASH(NCH, 'SHA256')), RAWTOHEX(STANDARD_HASH(NVC, 'SHA256')), "+
+		"LENGTH(NVC), DBMS_LOB.GETLENGTH(NC) FROM "+quoteIdent(owner)+".NATS ORDER BY ID")
+}
+
+// sameNclobs is, per row, whether dst's NATS NCLOB has the same content as src's.
+func sameNclobs(t *testing.T, admin *sql.DB, src, dst string) []string {
+	t.Helper()
+	return textRows(t, admin, "SELECT s.ID, CASE WHEN s.NC IS NULL AND d.NC IS NULL THEN 'null' "+
+		"WHEN DBMS_LOB.COMPARE(s.NC, d.NC) = 0 THEN 'same' ELSE 'differs' END FROM "+
+		quoteIdent(src)+".NATS s LEFT JOIN "+quoteIdent(dst)+".NATS d ON d.ID = s.ID ORDER BY s.ID")
+}
+
+// National text survives a database whose character set is not Unicode (19c
+// ZHS16GBK): NCHAR / NVARCHAR2 / NCLOB values with emoji, characters outside GBK,
+// backslashes and Chinese, an NVARCHAR2 at its maximum length and an NCLOB too
+// large for one literal, dumped and run into another user, hold the same national
+// bytes. So does the large row copied as INSERT and run; a filter on the long
+// NVARCHAR2 finds its row, and a grid edit locating the row by it sets a national value.
+func TestIntegrationDumpNationalValuesRoundTrip(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		adminInfo := adminTarget(t, target)
+		admin := adminInfo.open(t, "")
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+		srcName, dstName := "OPSKAT_VAL_NS"+suffix, "OPSKAT_VAL_ND"+suffix
+		srcDB := createDumpUser(t, admin, target, srcName)
+		dstDB := createDumpUser(t, admin, target, dstName)
+		src, dst := sqldb.NewSession(srcDB, dialect{}), sqldb.NewSession(dstDB, dialect{})
+		for _, statement := range append([]string{nationalTableDDL}, nationalFixture...) {
+			_, err := src.Execute(integrationContext(t), statement)
+			require.NoError(t, err, statement)
+		}
+
+		// The source holds the values themselves, not what GBK made of them.
+		values := nationalValues()
+		var want []string
+		for i, v := range values {
+			nclob := ""
+			if v[2] != "" {
+				nclob = fmt.Sprint(len(utf16.Encode([]rune(v[2]))))
+			}
+			want = append(want, fmt.Sprintf("%d|%s|%s|%d|%s", i+1, nationalHash(v[0]), nationalHash(v[1]),
+				len(utf16.Encode([]rune(v[1]))), nclob))
+		}
+		rows := nationalRows(t, admin, srcName)
+		require.Equal(t, want, rows)
+		require.Equal(t, "2000", strings.Split(rows[1], "|")[3])
+		nclobs := textRows(t, admin, "SELECT NC FROM "+quoteIdent(srcName)+".NATS ORDER BY ID")
+		require.Len(t, nclobs, len(values))
+		for i, v := range values {
+			require.Equal(t, v[2], nclobs[i], "NCLOB of row %d", i+1)
+		}
+
+		var out bytes.Buffer
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		_, err := src.Dump(ctx, dbdriver.DumpRequest{Database: srcName, Whole: true, WithData: true, Writer: &out})
+		require.NoError(t, err)
+		file := out.String()
+		for _, want := range []string{`UNISTR('\00EF\00F8\D83D\DE00\005C\4E2D`, `') || UNISTR('`,
+			"DBMS_LOB.APPEND(l1, TO_NCLOB(UNISTR('", `N'C:\path\''x'''`} {
+			assert.Contains(t, file, want)
+		}
+		runOK(t, dst, dstName, file)
+		assert.Equal(t, rows, nationalRows(t, admin, dstName))
+		same := []string{"1|same", "2|same", "3|null"}
+		assert.Equal(t, same, sameNclobs(t, admin, srcName, dstName))
+
+		// A filter on the NVARCHAR2 at its maximum length finds its row.
+		page, err := src.TableRows(integrationContext(t), srcName, "NATS", dbdriver.TableQuery{
+			Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Column: "NVC", Operator: dbdriver.OpEqual, Value: values[1][1]}},
+		}, dbdriver.Page{Index: 0, Size: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+
+		// Copy as INSERT of that row, run in the query editor.
+		writer, err := src.PrepareRowStatements(integrationContext(t), srcName, "NATS")
+		require.NoError(t, err)
+		inserts, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+			Kind: dbdriver.RowInsert, Columns: page.Columns, Rows: []map[string]any{columnValues(page, 0)}, OmitDatabase: true,
+		})
+		require.NoError(t, err)
+		require.Len(t, inserts, 1)
+		require.True(t, strings.HasPrefix(inserts[0], "DECLARE\n"), "%.80s", inserts[0])
+		_, err = dst.Execute(integrationContext(t), "DELETE FROM NATS WHERE ID = 2")
+		require.NoError(t, err)
+		_, err = dst.Execute(integrationContext(t), inserts[0])
+		require.NoError(t, err)
+		assert.Equal(t, rows, nationalRows(t, admin, dstName))
+		assert.Equal(t, same, sameNclobs(t, admin, srcName, dstName))
+
+		// A grid edit that locates the row by the long NVARCHAR2 sets a national value.
+		edits, err := dst.GridEditStatements(integrationContext(t), dstName, "NATS", dbdriver.GridEditRequest{
+			Columns: []string{"ID", "NVC"},
+			Updates: []dbdriver.GridUpdate{{Row: map[string]any{"ID": "2", "NVC": values[1][1]},
+				Set: []dbdriver.ColumnValue{{Column: "NCH", Value: "ø😀"}}}},
+		})
+		require.NoError(t, err)
+		require.Len(t, edits.Updates, 1)
+		_, err = dst.Execute(integrationContext(t), edits.Updates[0])
+		require.NoError(t, err)
+		assert.Equal(t, []string{nationalHash("ø😀" + strings.Repeat(" ", 7))}, textRows(t, admin,
+			"SELECT RAWTOHEX(STANDARD_HASH(NCH, 'SHA256')) FROM "+quoteIdent(dstName)+".NATS WHERE ID = 2"))
 	})
 }

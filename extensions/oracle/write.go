@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
@@ -73,7 +74,10 @@ func (dialect) EqualitySQL(columnType, column, literal string) string {
 //     the fraction, " +08:00"), so the fraction and the zone are kept.
 //   - INTERVAL DAY TO SECOND / YEAR TO MONTH: TO_DSINTERVAL / TO_YMINTERVAL of
 //     go-ora's text ("+01 02:03:04.500000", "+01-02").
-//   - NCHAR / NVARCHAR2 / NCLOB: N'...'; other text a string literal.
+//   - NCHAR / NVARCHAR2 / NCLOB: N'...' when the text is ASCII; otherwise
+//     UNISTR of its escapes (nationalLiteral), which Oracle does not convert
+//     through the database character set as it does an N'...' literal (a GBK
+//     database loses an emoji, ï, ø). Other text is a string literal.
 //   - RAW / LONG RAW / BLOB: HEXTORAW of the value's bytes (the shown text is them).
 //
 // A text that is not in the shown layout (typed into the grid or a filter, read
@@ -132,8 +136,61 @@ func formattedLiteral(columnType, text string) (string, bool) {
 		return "TO_DSINTERVAL(" + sqlString(text) + ")", daySecond.MatchString(text)
 	case "INTERVAL YEAR TO MONTH":
 		return "TO_YMINTERVAL(" + sqlString(text) + ")", yearMonth.MatchString(text)
+	case "NCHAR", "NVARCHAR2", "NCLOB":
+		return nationalLiteral(name, text)
 	}
 	return "", false
+}
+
+// nationalLiteral is the literal of national text with a character outside
+// ASCII: UNISTR of each piece's escapes (nationalPieces) joined with ||, an
+// NCLOB's pieces each converted with TO_NCLOB, since a concatenation of NVARCHAR2
+// holds 4000 bytes (ORA-01489) and one of NCLOBs any size. ASCII text is not
+// converted on its way to the national character set, so it stays N'...' (ok false).
+func nationalLiteral(name, text string) (string, bool) {
+	if isASCII(text) {
+		return "", false
+	}
+	pieces := nationalPieces(text)
+	for i, piece := range pieces {
+		pieces[i] = "UNISTR('" + unicodeEscapes(piece) + "')"
+		if name == "NCLOB" && len(pieces) > 1 {
+			pieces[i] = "TO_NCLOB(" + pieces[i] + ")"
+		}
+	}
+	return strings.Join(pieces, " || "), true
+}
+
+func isASCII(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// unicodeEscapes is text as UNISTR's argument: ASCII as it is with quotes
+// doubled and a backslash as \005C, every other character as \XXXX per UTF-16
+// unit (a supplementary character as its surrogate pair).
+func unicodeEscapes(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		switch {
+		case r == '\\':
+			b.WriteString(`\005C`)
+		case r == '\'':
+			b.WriteString("''")
+		case r < utf8.RuneSelf:
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			high, low := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\%04X\%04X`, high, low)
+		default:
+			fmt.Fprintf(&b, `\%04X`, r)
+		}
+	}
+	return b.String()
 }
 
 // dateTimeLiteral converts a date-time text of the shown layout with the format
@@ -263,7 +320,8 @@ type largeLob struct {
 
 // splitLob reports whether column holds a CLOB, NCLOB or BLOB value too large for
 // one literal, and splits it into the calls that append it, each piece the
-// column's literal (literals: N'…' for national text, HEXTORAW for bytes).
+// column's literal (literals: N'…' or UNISTR('…') for national text, HEXTORAW
+// for bytes).
 func splitLob(column sqldb.InsertColumn, literals sqldb.Literals) (largeLob, bool, error) {
 	var text string
 	switch v := column.Value.(type) {
@@ -281,7 +339,12 @@ func splitLob(column sqldb.InsertColumn, literals sqldb.Literals) (largeLob, boo
 	var arguments func(piece, literal string) string
 	switch kind {
 	case "CLOB", "NCLOB":
-		if pieces = textPieces(text, kind == "NCLOB"); len(pieces) < 2 {
+		if kind == "NCLOB" {
+			pieces = nationalPieces(text)
+		} else {
+			pieces = textPieces(text)
+		}
+		if len(pieces) < 2 {
 			return largeLob{}, false, nil
 		}
 		lob = largeLob{kind: kind, empty: "EMPTY_CLOB()", call: "DBMS_LOB.APPEND"}
@@ -311,24 +374,49 @@ func splitLob(column sqldb.InsertColumn, literals sqldb.Literals) (largeLob, boo
 // textPieces splits text into pieces whose string literals fit maxTextLiteral,
 // never inside a character. The size is the literal's, quotes doubled, in UTF-8:
 // the size in an AL32UTF8 database, and more than in a GBK one (two bytes for a
-// Chinese character). National text is also counted in UTF-16, the AL16UTF16
-// national character set.
-func textPieces(text string, national bool) []string {
-	var pieces []string
-	start, size8, size16 := 0, 0, 0
-	for i, r := range text {
-		n8, n16 := utf8.RuneLen(r), 2
-		if r > 0xFFFF {
-			n16 = 4
-		}
+// Chinese character).
+func textPieces(text string) []string {
+	return literalPieces(text, func(r rune) (int, int) {
 		if r == '\'' {
-			n8, n16 = 2*n8, 2*n16
+			return 2, 0
 		}
-		if size8+n8 > maxTextLiteral || (national && size16+n16 > maxTextLiteral) {
+		return utf8.RuneLen(r), 0
+	})
+}
+
+// nationalPieces splits national text into pieces whose literals fit
+// maxTextLiteral, never inside a character, so never inside an escape or a
+// surrogate pair: UNISTR's argument (unicodeEscapes, ASCII) holds 4000 bytes, and
+// so does its result and an N'...' literal in AL16UTF16, the national character
+// set (UNISTR cuts a longer result off without an error). Quotes count doubled.
+func nationalPieces(text string) []string {
+	return literalPieces(text, func(r rune) (int, int) {
+		switch {
+		case r == '\'':
+			return 2, 4
+		case r == '\\':
+			return 5, 2
+		case r < utf8.RuneSelf:
+			return 1, 2
+		case r > 0xFFFF:
+			return 10, 4
+		}
+		return 5, 2
+	})
+}
+
+// literalPieces splits text before each character that would take a piece past
+// maxTextLiteral in either of the two sizes size gives a character.
+func literalPieces(text string, size func(r rune) (int, int)) []string {
+	var pieces []string
+	start, total1, total2 := 0, 0, 0
+	for i, r := range text {
+		n1, n2 := size(r)
+		if total1+n1 > maxTextLiteral || total2+n2 > maxTextLiteral {
 			pieces = append(pieces, text[start:i])
-			start, size8, size16 = i, 0, 0
+			start, total1, total2 = i, 0, 0
 		}
-		size8, size16 = size8+n8, size16+n16
+		total1, total2 = total1+n1, total2+n2
 	}
 	return append(pieces, text[start:])
 }

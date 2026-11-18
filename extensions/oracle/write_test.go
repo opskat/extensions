@@ -300,7 +300,8 @@ func expectDocsColumns(mock sqlmock.Sqlmock) {
 }
 
 // A row whose LOB does not fit one literal (4000 bytes of text, quotes doubled,
-// counted in UTF-8 and for national text also in UTF-16; 2000 bytes of HEXTORAW)
+// counted in UTF-8, national text in its escapes and in UTF-16; 2000 bytes of
+// HEXTORAW)
 // is a PL/SQL block: the row is inserted with an empty LOB in each such column,
 // whose locators the INSERT returns, and each value is appended piece by piece,
 // a piece never splitting a character; the block ends with a line holding only /.
@@ -336,7 +337,7 @@ func TestRowStatementsWriteLargeLobsAsBlocks(t *testing.T) {
 		` RETURNING "BODY", "NBODY", "IMG" INTO l1, l2, l3;` + "\n" +
 		"  DBMS_LOB.APPEND(l1, TO_CLOB('" + x + "'));\n" +
 		"  DBMS_LOB.APPEND(l1, TO_CLOB('中" + y + "'));\n" +
-		"  DBMS_LOB.APPEND(l2, TO_NCLOB(N'" + n + "中'));\n" +
+		"  DBMS_LOB.APPEND(l2, TO_NCLOB(UNISTR('" + n + "\\4E2D')));\n" +
 		"  DBMS_LOB.APPEND(l2, TO_NCLOB(N'''z'));\n" +
 		"  DBMS_LOB.WRITEAPPEND(l3, 2000, HEXTORAW('" + hex.EncodeToString(img[:2000]) + "'));\n" +
 		"  DBMS_LOB.WRITEAPPEND(l3, 50, HEXTORAW('" + hex.EncodeToString(img[2000:]) + "'));\n" +
@@ -358,4 +359,86 @@ func TestLargeLobBlockKeepsTheInsertModifier(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Contains(t, statement, `INSERT INTO "DOCS" ("BODY") /*+ APPEND */ VALUES (EMPTY_CLOB()) RETURNING "BODY" INTO l1;`)
+}
+
+// National text is written so that Oracle does not convert it through the
+// database character set, which loses what that set lacks (an emoji, ï and ø in
+// ZHS16GBK): a value with any character outside ASCII is UNISTR of its escapes,
+// \XXXX per UTF-16 unit (a supplementary character a surrogate pair), a backslash
+// \005C and quotes doubled. An ASCII value stays N'…'; other text is unchanged.
+func TestNationalTextIsWrittenAsUnicodeEscapes(t *testing.T) {
+	for _, tc := range []struct{ name, columnType, value, want string }{
+		{"emoji and characters outside GBK", "NVARCHAR2(100)", `张三😀 ï\ø's`, `UNISTR('\5F20\4E09\D83D\DE00 \00EF\005C\00F8''s')`},
+		{"NCHAR", "NCHAR(4)", "ï", `UNISTR('\00EF')`},
+		{"NCLOB", "NCLOB", "😀", `UNISTR('\D83D\DE00')`},
+		{"ASCII national text", "NVARCHAR2(20)", `it's \n`, `N'it''s \n'`},
+		{"VARCHAR2", "VARCHAR2(20 CHAR)", "中文😀", `'中文😀'`},
+		{"CLOB", "CLOB", "ø", `'ø'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := literals.Literal(tc.value, tc.columnType)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// One string literal holds 4000 bytes (ORA-01704) and UNISTR returns at most 4000
+// bytes of UTF-16, cutting the rest off silently, so national text whose escapes
+// do not fit is several UNISTR pieces joined with ||, each within both limits
+// and never splitting an escape or a surrogate pair. The concatenation stays
+// NVARCHAR2; an NCLOB's pieces are converted with TO_NCLOB so that their
+// concatenation is not limited to 4000 bytes.
+func TestLongNationalTextIsSplitIntoUnistrPieces(t *testing.T) {
+	unistr := func(escapes string, n int) string { return "UNISTR('" + strings.Repeat(escapes, n) + "')" }
+
+	got, err := literals.Literal(strings.Repeat("ø", 2000), "NVARCHAR2(2000)")
+	require.NoError(t, err)
+	assert.Equal(t, unistr(`\00F8`, 800)+" || "+unistr(`\00F8`, 800)+" || "+unistr(`\00F8`, 400), got)
+
+	got, err = literals.Literal("a"+strings.Repeat("😀", 400), "NVARCHAR2(2000)")
+	require.NoError(t, err)
+	assert.Equal(t, "UNISTR('a"+strings.Repeat(`\D83D\DE00`, 399)+"') || "+unistr(`\D83D\DE00`, 1), got)
+
+	got, err = literals.Literal(strings.Repeat("a", 2000)+"ø", "NVARCHAR2(4000)")
+	require.NoError(t, err)
+	assert.Equal(t, unistr("a", 2000)+" || "+unistr(`\00F8`, 1), got)
+
+	got, err = literals.Literal(strings.Repeat("ø", 801), "NCLOB")
+	require.NoError(t, err)
+	assert.Equal(t, "TO_NCLOB("+unistr(`\00F8`, 800)+") || TO_NCLOB("+unistr(`\00F8`, 1)+")", got)
+}
+
+// The grid sets and locates national values with the same escapes.
+func TestGridEditStatementsWriteNationalTextAsUnicodeEscapes(t *testing.T) {
+	session, mock := newMockSession(t)
+	expectValsColumns(mock)
+
+	statements, err := session.GridEditStatements(context.Background(), "HR", "VALS", dbdriver.GridEditRequest{
+		Columns: []string{"ID", "NCH"},
+		Updates: []dbdriver.GridUpdate{{Row: map[string]any{"ID": "1", "NCH": "ï"},
+			Set: []dbdriver.ColumnValue{{Column: "NVC", Value: "张三😀"}}}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{`UPDATE "HR"."VALS" SET "NVC" = UNISTR('\5F20\4E09\D83D\DE00') ` +
+		`WHERE ROWID = (SELECT ROWID FROM "HR"."VALS" WHERE "ID" = 1 AND "NCH" = UNISTR('\00EF') FETCH FIRST 1 ROW ONLY)`},
+		statements.Updates)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An NCLOB too large for one literal is appended in TO_NCLOB(UNISTR(…)) pieces
+// sized for the escaped form: 400 emoji (4000 bytes of escapes) fill a piece,
+// and the next emoji starts the next one whole.
+func TestLargeNclobBlockAppendsUnistrPieces(t *testing.T) {
+	statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{{Name: "NBODY", Type: "NCLOB", Value: strings.Repeat("😀", 401) + "ï"}},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "DECLARE\n  l1 NCLOB;\nBEGIN\n"+
+		`  INSERT INTO "DOCS" ("NBODY") VALUES (EMPTY_CLOB()) RETURNING "NBODY" INTO l1;`+"\n"+
+		"  DBMS_LOB.APPEND(l1, TO_NCLOB(UNISTR('"+strings.Repeat(`\D83D\DE00`, 400)+"')));\n"+
+		`  DBMS_LOB.APPEND(l1, TO_NCLOB(UNISTR('\D83D\DE00\00EF')));`+"\n"+
+		"END;\n/", statement)
 }
