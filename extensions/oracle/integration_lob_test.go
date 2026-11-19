@@ -188,9 +188,10 @@ func TestIntegrationLargeLobs(t *testing.T) {
 					return
 				}
 
-				// Copy as INSERT, from a table view opened afresh: the value as the
+				// Copy as INSERT, from a table view opened afresh on the same instance: the value as the
 				// grid hands it back (its page, through JSON) is the dump's statement.
-				d = load(t)
+				// It runs on the instance the dump and the run above used, whose memory
+				// has already grown for them: the copy must fit in what is left.
 				src = d.open(t, srcUser, srcName)
 				start = time.Now()
 				page, err := src.TableRows(lobContext(t), srcName, tc.table, dbdriver.TableQuery{}, dbdriver.Page{Index: 0, Size: 100})
