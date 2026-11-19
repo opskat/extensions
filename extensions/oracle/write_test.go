@@ -483,12 +483,11 @@ func base64Bytes(raw []byte) string {
 	return "UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('" + base64.StdEncoding.EncodeToString(raw) + "'))"
 }
 
-// A row whose appends take more than about 1 MiB is several blocks of about that
-// size, run one after another in one session, since running a statement takes
-// several times its size in the extension: the first inserts the row and keeps
-// its ROWID in CLIENT_INFO, each other locks the row by it and appends the next
-// pieces of one column, the last clears CLIENT_INFO. The pieces are the value.
-func TestLargeRowIsWrittenAsSeveralBlocks(t *testing.T) {
+// However large its values (up to maxLobBytes each), a row is one PL/SQL block
+// that inserts it with empty LOBs and appends every piece to the locators the
+// INSERT returns (spec decision 10): it does not depend on what another
+// statement left in the session. The pieces are the value.
+func TestLargeRowIsOneBlock(t *testing.T) {
 	var body strings.Builder
 	for i := 0; body.Len() < 2_500_000; i++ {
 		fmt.Fprintf(&body, "line %d 'q' 中文\n", i)
@@ -509,33 +508,25 @@ func TestLargeRowIsWrittenAsSeveralBlocks(t *testing.T) {
 	require.True(t, ok)
 	statements, err := splitOracle(context.Background(), statement)
 	require.NoError(t, err)
-	require.Len(t, statements, 1+3+2)
-	assert.Equal(t, "DECLARE\n  r UROWID;\nBEGIN\n"+
-		`  INSERT INTO "HR"."DOCS" ("ID", "BODY", "IMG") VALUES (7, EMPTY_CLOB(), EMPTY_BLOB()) RETURNING ROWID INTO r;`+"\n"+
-		"  DBMS_APPLICATION_INFO.SET_CLIENT_INFO(r);\nEND;", statements[0].Text)
+	require.Len(t, statements, 1)
+	st := statements[0].Text
+	assert.True(t, strings.HasPrefix(st, "DECLARE\n  l1 CLOB;\n  l2 BLOB;\nBEGIN\n"+
+		`  INSERT INTO "HR"."DOCS" ("ID", "BODY", "IMG") VALUES (7, EMPTY_CLOB(), EMPTY_BLOB()) RETURNING "BODY", "IMG" INTO l1, l2;`+"\n"), st[:300])
+	assert.True(t, strings.HasSuffix(st, "\nEND;"), st[len(st)-100:])
+	assert.NotContains(t, st, "CLIENT_INFO")
 
-	clobPiece := regexp.MustCompile(`TO_CLOB\('((?:[^']|'')*)'\)`)
-	blobPiece := regexp.MustCompile(`WRITEAPPEND\(l, (\d+), UTL_ENCODE\.BASE64_DECODE\(UTL_RAW\.CAST_TO_RAW\('([^']*)'\)\)\)`)
+	clobPiece := regexp.MustCompile(`DBMS_LOB\.APPEND\(l1, TO_CLOB\('((?:[^']|'')*)'\)\)`)
+	blobPiece := regexp.MustCompile(`WRITEAPPEND\(l2, (\d+), UTL_ENCODE\.BASE64_DECODE\(UTL_RAW\.CAST_TO_RAW\('([^']*)'\)\)\)`)
 	var text strings.Builder
 	var data []byte
-	for i, st := range statements[1:] {
-		column, kind := `"BODY"`, "CLOB"
-		if i >= 3 {
-			column, kind = `"IMG"`, "BLOB"
-		}
-		assert.True(t, strings.HasPrefix(st.Text, "DECLARE\n  l "+kind+";\nBEGIN\n  SELECT "+column+` INTO l FROM "HR"."DOCS" `+
-			"WHERE ROWID = SYS_CONTEXT('USERENV', 'CLIENT_INFO') FOR UPDATE;\n"), st.Text[:200])
-		assert.Less(t, len(st.Text), (1<<20)+5000, "block %d", i)
-		assert.Equal(t, i == 4, strings.Contains(st.Text, "DBMS_APPLICATION_INFO.SET_CLIENT_INFO(NULL);"), "block %d", i)
-		for _, m := range clobPiece.FindAllStringSubmatch(st.Text, -1) {
-			text.WriteString(strings.ReplaceAll(m[1], "''", "'"))
-		}
-		for _, m := range blobPiece.FindAllStringSubmatch(st.Text, -1) {
-			raw, err := base64.StdEncoding.DecodeString(m[2])
-			require.NoError(t, err)
-			assert.Equal(t, m[1], strconv.Itoa(len(raw)))
-			data = append(data, raw...)
-		}
+	for _, m := range clobPiece.FindAllStringSubmatch(st, -1) {
+		text.WriteString(strings.ReplaceAll(m[1], "''", "'"))
+	}
+	for _, m := range blobPiece.FindAllStringSubmatch(st, -1) {
+		raw, err := base64.StdEncoding.DecodeString(m[2])
+		require.NoError(t, err)
+		assert.Equal(t, m[1], strconv.Itoa(len(raw)))
+		data = append(data, raw...)
 	}
 	assert.Equal(t, body.String(), text.String())
 	assert.Equal(t, img, data)

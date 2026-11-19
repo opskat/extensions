@@ -291,10 +291,9 @@ const (
 // A value may take 16 MB (maxLobBytes) and its appends more, all in the
 // extension's memory together with the request and the reply, so they are
 // written into one buffer sized for them up front, each piece encoded as it is
-// written: no copy of the value and no list of its literals. Running a statement
-// takes several times its size in the extension (go-ora encodes it a rune at a
-// time), so appends past maxBlockBytes are not one block but several of about
-// that size each (largeRowBlocks).
+// written: no copy of the value and no list of its literals. However large, the
+// row is this one block, which depends on nothing another statement left in the
+// session.
 func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 	large := make([]*largeLob, len(row.Columns))
 	size := 0
@@ -333,12 +332,8 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 	if row.Modifier != "" {
 		modifier = " " + row.Modifier
 	}
-	insert := fmt.Sprintf("  INSERT INTO %s (%s)%s VALUES (%s) RETURNING ", row.TableRef,
-		strings.Join(names, ", "), modifier, strings.Join(values, ", "))
-	if size > maxBlockBytes {
-		return largeRowBlocks(row, insert, names, large, size)
-	}
-	insert += strings.Join(returning, ", ") + " INTO " + strings.Join(into, ", ") + ";\n"
+	insert := fmt.Sprintf("  INSERT INTO %s (%s)%s VALUES (%s) RETURNING %s INTO %s;\n", row.TableRef,
+		strings.Join(names, ", "), modifier, strings.Join(values, ", "), strings.Join(returning, ", "), strings.Join(into, ", "))
 	const end = "END;\n/"
 	var b strings.Builder
 	b.Grow(len("DECLARE\n") + declare.Len() + len("BEGIN\n") + len(insert) + size + len(end))
@@ -354,52 +349,6 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 		}
 	}
 	b.WriteString(end)
-	return b.String(), true, nil
-}
-
-// maxBlockBytes is about the most a PL/SQL block of appends takes.
-const maxBlockBytes = 1 << 20
-
-// largeRowBlocks writes a row whose appends take more than maxBlockBytes as
-// blocks of about that size, run one after another in one session: the first
-// inserts the row with its empty LOBs and keeps its ROWID in the session's
-// CLIENT_INFO (DBMS_APPLICATION_INFO, which any user may set), each of the
-// others locks the row by that ROWID and appends the next pieces of one column,
-// and the last clears CLIENT_INFO again. insert is the INSERT up to RETURNING.
-func largeRowBlocks(row sqldb.InsertRow, insert string, names []string, large []*largeLob, size int) (string, bool, error) {
-	const (
-		head  = "DECLARE\n  r UROWID;\nBEGIN\n"
-		keep  = "ROWID INTO r;\n  DBMS_APPLICATION_INFO.SET_CLIENT_INFO(r);\nEND;\n/"
-		lock  = " FROM %s WHERE ROWID = SYS_CONTEXT('USERENV', 'CLIENT_INFO') FOR UPDATE;\n"
-		clear = "  DBMS_APPLICATION_INFO.SET_CLIENT_INFO(NULL);\n"
-		end   = "END;\n/"
-	)
-	last := -1
-	for i, lob := range large {
-		if lob != nil {
-			last = i
-		}
-	}
-	var b strings.Builder
-	b.Grow(len(head) + len(insert) + len(keep) + size + (size/maxBlockBytes+len(large)+1)*(256+len(row.TableRef)))
-	b.WriteString(head + insert + keep)
-	for i, lob := range large {
-		if lob == nil {
-			continue
-		}
-		for next := 0; next < len(lob.pieces); {
-			b.WriteString("\nDECLARE\n  l " + lob.kind + ";\nBEGIN\n  SELECT " + names[i] + " INTO l" + fmt.Sprintf(lock, row.TableRef))
-			for start := b.Len(); next < len(lob.pieces) && b.Len()-start < maxBlockBytes; next++ {
-				if err := lob.write(&b, "l", lob.pieces[next], row.Literals); err != nil {
-					return "", false, err
-				}
-			}
-			if i == last && next == len(lob.pieces) {
-				b.WriteString(clear)
-			}
-			b.WriteString(end)
-		}
-	}
 	return b.String(), true, nil
 }
 

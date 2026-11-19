@@ -129,10 +129,8 @@ characters for a CLOB or NCLOB (a character counts 2 bytes; the characters are w
 `DBMS_LOB.GETLENGTH` counts). In "Copy as INSERT", export as SQL and dumps, a row
 whose value does not fit one SQL literal is a PL/SQL block that inserts it with an
 empty LOB and appends the value piece by piece (a CLOB as text, an NCLOB or BLOB in
-base64). When the appends take more than about 1 MB, the row is several such blocks
-of about 1 MB: the first keeps the new row's ROWID in the session's `CLIENT_INFO`
-(`DBMS_APPLICATION_INFO`), the others append to that row, and the last clears it.
-Run them in order in one session, as Run SQL File and SQL*Plus do.
+base64), one block per row however large its values, ending with a line holding
+only `/`.
 
 A larger value stops the read before the value is read, with an error naming the
 table, the column and the size, for example `column "DOC" of table "HR"."FILES"
