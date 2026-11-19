@@ -2,7 +2,7 @@
 
 > Status: Approved
 > Owner: OpsKat 维护者
-> Last updated: 2026-11-19（修订：sqldb 按行写语句的钩子；日期类取值统一显式格式；整库转储的视图取自 ListObjects；修正轮 1–3：国家字符集 UNISTR、标识列提前、SDK 调用结束回收、LOB 单值 16 MB 与宿主内存上限）
+> Last updated: 2026-11-19（修订：sqldb 按行写语句的钩子；日期类取值统一显式格式；整库转储的视图取自 ListObjects；修正轮 1–3：国家字符集 UNISTR、标识列提前、SDK 调用结束回收、LOB 单值 16 MB 与宿主内存上限 512 MB）
 
 **Objective:** Oracle 扩展 0.3.0 在 OpsKat 里提供与内置驱动相同的「转储 SQL 文件」与「运行 SQL 文件」：把 Oracle 用户（schema）里的表、视图、序列、函数、过程、包、触发器与数据转储成一个能还原的 `.sql` 文件，并能在任意 Oracle 用户下运行这样的文件（以及 SQL Developer 导出的文件）。
 
@@ -43,7 +43,7 @@ opskat issue #368 的后续。主仓库 PR opskat/opskat#382（分支 `feat/sql-
 | 10 | **[用户决定]** 在 `pkg/dbdriver/sqldb` 加一个可选钩子：方言可以为某一行写出整条语句（包括 PL/SQL 块）代替默认的 INSERT；Oracle 用它把放不进字面量的 LOB 行写成「插入空 LOB 再分段 `DBMS_LOB.APPEND`」的块，以 `/` 结束 | [已核实] 行语句的形状由 sqldb 固定为 `INSERT … VALUES …;`（`pkg/dbdriver/sqldb/rows.go:131-135`），方言只能决定单个值的写法；CLOB 可用 `TO_CLOB` 拼接，BLOB 在 SQL 里不能拼接。sqldb 编进扩展的 WASM、不经宿主 ABI。Rejected: CLOB 拼接、大 BLOB 停下报错——不能还原 |
 | 11 | **[用户决定]** 日期、时间戳（含时区）、间隔值统一写成显式格式的 `TO_DATE` / `TO_TIMESTAMP` / `TO_TIMESTAMP_TZ` / `TO_DSINTERVAL` / `TO_YMINTERVAL`，转储、复制为 INSERT、导出为 SQL、表格编辑一致 | 文件在 SQL*Plus 等外部工具里导入也不依赖 NLS；同一种写法，不分叉。[已核实] 现在写成依赖会话 NLS 的字符串（`extensions/oracle/write.go:68-92`，NLS 在连接时设定 `connect.go:40`）。Rejected: 保持现有写法——文件离开 OpsKat 可能因 NLS 不同而导入失败 |
 | 12 | **[用户决定]** 整库转储的视图由宿主取自 `ListObjects` 的视图列表（opskat#382 上的宿主修正），Oracle 的 `ListTables` 仍只列表 | [已核实] 宿主 `planDump` 只把 `ListTables` 里同时出现在 `ListObjects.Views` 中的名字当作视图（opskat `pkg/dbdriver/dump.go:311-322`），Oracle 的 `ListTables` 只列表（`extensions/oracle/catalog.go:36-44`），整库转储因此没有视图。Rejected: Oracle 的 `ListTables` 也列出视图——树的「表」下会出现视图，违反浏览行为不变 |
-| 13 | **[用户决定]** 宿主为扩展驱动（不只 Oracle）：扩展实例的内存上限由 64 MB 提到 256 MB；按行读取的游标每页按字节封顶（约 4 MB，至少一行），不再固定 256 行；扩展 SDK 的调用结束回收（修正轮 2）保留。宿主 ABI 的形状不变 | [已核实] 宿主上限 `WithMemoryLimitPages(1024)`（opskat `pkg/extension/runtime.go:152`），Oracle 模块静态映像占 19.6 MB；每页固定 `driverStreamRows = 256` 行（`internal/extreg/extdriver/session.go:57`），30 行 × 256 KB 的一页已让 0.2.0 的整表导出崩溃。Rejected: 只调 Oracle——问题在宿主与 SDK 的共用路径；不设单值上限——Go 的内存不足不可恢复，只能在读值之前拦下 |
+| 13 | **[用户决定]** 宿主为扩展驱动（不只 Oracle）：扩展实例的内存上限由 64 MB 提到 512 MB（修正轮 3 实测 16 MB 的值峰值 211–245 MB，256 MB 余量不足，用户改定）；按行读取的游标每页按字节封顶（约 4 MB，至少一行），不再固定 256 行；扩展 SDK 的调用结束回收（修正轮 2）保留。宿主 ABI 的形状不变 | [已核实] 宿主上限 `WithMemoryLimitPages(1024)`（opskat `pkg/extension/runtime.go:152`），Oracle 模块静态映像占 19.6 MB；每页固定 `driverStreamRows = 256` 行（`internal/extreg/extdriver/session.go:57`），30 行 × 256 KB 的一页已让 0.2.0 的整表导出崩溃。Rejected: 只调 Oracle——问题在宿主与 SDK 的共用路径；不设单值上限——Go 的内存不足不可恢复，只能在读值之前拦下 |
 
 ## 能力声明
 
