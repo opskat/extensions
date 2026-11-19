@@ -148,16 +148,23 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow(`C"FG`, "JSON", nil).
 		AddRow("EMB", "VECTOR", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
-		`JSON_SERIALIZE("C""FG" RETURNING CLOB), FROM_VECTOR("EMB" RETURNING CLOB) ` +
+	// Their text is a CLOB of any size, read only within 16 MB like a CLOB's
+	// (TestTableReadStopsBeforeALobOverTheLimit).
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	cfg, cfgGuard := guardedSelect(`JSON_SERIALIZE("C""FG" RETURNING CLOB)`, 8388608)
+	emb, embGuard := guardedSelect(`FROM_VECTOR("EMB" RETURNING CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, "TS", ` + cfg + `, ` + emb + `, ` + docGuard + `, ` + cfgGuard + `, ` + embGuard + ` ` +
 		`FROM ` + emp + ` WHERE "ID" = 1 ORDER BY "ID" ASC OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
-			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`DOC`).OfType("OCIClobLocator", ""),
 			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
-			sqlmock.NewColumn(`JSON_SERIALIZE("C""FG"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
-			sqlmock.NewColumn(`FROM_VECTOR("EMB"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
-		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, "[1,2]"))
+			sqlmock.NewColumn(`CFG`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`EMB`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn("GDOC").OfType("NUMBER", ""),
+			sqlmock.NewColumn("GCFG").OfType("NUMBER", ""),
+			sqlmock.NewColumn("GEMB").OfType("NUMBER", ""),
+		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, "[1,2]", nil, nil, nil))
 
 	rows, err := s.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
 		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "1"}},
@@ -181,14 +188,22 @@ func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("DOC", "XMLTYPE", nil).
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow("CFG", "JSON", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
-		`JSON_SERIALIZE("CFG" RETURNING CLOB) FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC`).
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	cfg, cfgGuard := guardedSelect(`JSON_SERIALIZE("CFG" RETURNING CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH(XMLSERIALIZE(CONTENT "DOC" AS CLOB)), 0) * 3 + ` +
+		`NVL(DBMS_LOB.GETLENGTH(JSON_SERIALIZE("CFG" RETURNING CLOB)), 0) * 3) ` +
+		`FROM (SELECT "DOC", "CFG" FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC)`).
+		WillReturnRows(sqlmock.NewRows([]string{"MAX"}).AddRow("100"))
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, "TS", ` + cfg + `, ` + docGuard + `, ` + cfgGuard +
+		` FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
-			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`DOC`).OfType("OCIClobLocator", ""),
 			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
-			sqlmock.NewColumn(`JSON_SERIALIZE("CFG"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
-		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`))
+			sqlmock.NewColumn(`CFG`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn("GDOC").OfType("NUMBER", ""),
+			sqlmock.NewColumn("GCFG").OfType("NUMBER", ""),
+		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, nil, nil))
 
 	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
 		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "union"}},
@@ -282,8 +297,9 @@ func TestOpenTableFirstPageIsShownLikeTheTableView(t *testing.T) {
 		AddRow("DOC", "XMLTYPE", "YES", nil, nil, "0", "0", "0"))
 	mock.ExpectQuery(`SELECT COUNT(*) FROM ` + emp).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow("1"))
 	expectTableColumns(mock, tableColumnTypes().AddRow("ID", "NUMBER", nil).AddRow("DOC", "XMLTYPE", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) FROM ` + emp + ` FETCH FIRST 50 ROWS ONLY`).
-		WillReturnRows(sqlmock.NewRows([]string{"ID", `XMLSERIALIZE(CONTENT"DOC"ASCLOB)`}).AddRow("1", "<a/>"))
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, ` + docGuard + ` FROM ` + emp + ` FETCH FIRST 50 ROWS ONLY`).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", "DOC", "GDOC"}).AddRow("1", "<a/>", nil))
 
 	opened, err := s.OpenTable(context.Background(), "HR", "EMP", 50)
 	require.NoError(t, err)
@@ -316,13 +332,9 @@ func TestTableReadStopsBeforeALobOverTheLimit(t *testing.T) {
 		AddRow("C", "CLOB", nil).
 		AddRow("NC", "NCLOB", nil).
 		AddRow("B", "BLOB", nil))
-	guarded := func(column string, limit int) (string, string) {
-		return fmt.Sprintf(`CASE WHEN DBMS_LOB.GETLENGTH("%[1]s") <= %[2]d THEN "%[1]s" END`, column, limit),
-			fmt.Sprintf(`CASE WHEN DBMS_LOB.GETLENGTH("%[1]s") > %[2]d THEN DBMS_LOB.GETLENGTH("%[1]s") END`, column, limit)
-	}
-	c, cGuard := guarded("C", 8388608)
-	nc, ncGuard := guarded("NC", 8388608)
-	b, bGuard := guarded("B", 16777216)
+	c, cGuard := guardedSelect(`"C"`, 8388608)
+	nc, ncGuard := guardedSelect(`"NC"`, 8388608)
+	b, bGuard := guardedSelect(`"B"`, 16777216)
 	// The whole-table read sizes its fetches from its largest row first; rows of a
 	// few KB need no padding.
 	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH("C"), 0) * 3 + NVL(DBMS_LOB.GETLENGTH("NC"), 0) * 3 + ` +
@@ -342,6 +354,42 @@ func TestTableReadStopsBeforeALobOverTheLimit(t *testing.T) {
 	assert.False(t, stream.Next())
 	require.Error(t, stream.Err())
 	assert.Contains(t, stream.Err().Error(), `column "B" of table "HR"."EMP" holds a value of 17.0 MB (17825792 bytes)`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// guardedSelect is a guarded LOB's expression in a table read's SELECT list,
+// read only within limit DBMS_LOB.GETLENGTH units, and its guard column, the
+// length of a larger value.
+func guardedSelect(expr string, limit int) (string, string) {
+	return fmt.Sprintf(`CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) <= %[2]d THEN %[1]s END`, expr, limit),
+		fmt.Sprintf(`NULLIF(GREATEST(DBMS_LOB.GETLENGTH(%[1]s), %[2]d), %[2]d)`, expr, limit)
+}
+
+// An XMLType, JSON or VECTOR value over the limit, measured as its text, stops
+// the read like a CLOB's, naming the type's text; the whole-table read sizes its
+// fetches by that text too.
+func TestTableReadStopsBeforeSerializedTextOverTheLimit(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	expectTableColumns(mock, tableColumnTypes().
+		AddRow("ID", "NUMBER", nil).
+		AddRow("DOC", "XMLTYPE", nil))
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH(XMLSERIALIZE(CONTENT "DOC" AS CLOB)), 0) * 3) FROM (SELECT "DOC" FROM ` + emp + `)`).
+		WillReturnRows(sqlmock.NewRows([]string{"MAX"}).AddRow("1000"))
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, ` + docGuard + ` FROM ` + emp).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", "DOC", "GDOC"}).
+			AddRow("1", "<a/>", nil).
+			AddRow("2", nil, "8912896"))
+
+	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	assert.Equal(t, []string{"ID", "DOC"}, stream.Columns())
+	require.True(t, stream.Next(), "stream error: %v", stream.Err())
+	assert.Equal(t, []any{"1", "<a/>"}, stream.Row())
+	assert.False(t, stream.Next())
+	require.Error(t, stream.Err())
+	assert.Contains(t, stream.Err().Error(), `column "DOC" of table "HR"."EMP" holds a value of 17.0 MB (8912896 characters)`)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

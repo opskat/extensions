@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +34,8 @@ import (
 // and a copy: one call per operation, a cursor read page by page on the
 // instance it was opened on, row statements in parts of about
 // extwire.DriverRowsBytes, the bytes of a binary value named in both directions.
+// The sizes and the bytes' encoding are the host's own (extwire.DriverStreamRows,
+// RowParts, RowBytesOf, DriverStreamPage.RestoreBytes), so they cannot drift.
 
 // buildWasm builds the extension's main.wasm as `make build-backend` does.
 func buildWasm(t *testing.T) []byte {
@@ -467,15 +468,11 @@ func (r *wasmStream) Next() bool {
 		}
 		var page extwire.DriverStreamPage
 		r.err = r.inst.call(r.ctx, extwire.DriverCall{Op: extwire.DriverOpStreamNext, Args: extwire.DriverArgs{
-			Stream: r.id, Max: 256, AcceptBytes: true,
+			Stream: r.id, Max: extwire.DriverStreamRows, AcceptBytes: true,
 		}}, &page)
-		for _, cell := range page.Bytes {
-			raw, err := base64.StdEncoding.DecodeString(page.Rows[cell.Row][cell.Column].(string))
-			if err != nil {
-				r.err = err
-				return false
-			}
-			page.Rows[cell.Row][cell.Column] = string(raw)
+		if err := page.RestoreBytes(); err != nil {
+			r.err = errors.Join(r.err, err)
+			return false
 		}
 		r.rows, r.done = page.Rows, page.Done
 	}
@@ -518,31 +515,18 @@ type wasmWriter struct {
 	id   uint64
 }
 
-// RowStatements sends the rows in parts of about extwire.DriverRowsBytes of
-// values, at least one row each, and joins the parts' statements.
+// RowStatements sends the rows in the host's parts (extwire.RowParts) and joins
+// the parts' statements.
 func (w *wasmWriter) RowStatements(req dbdriver.RowStatementsRequest) ([]string, error) {
 	var out []string
-	start, size := 0, 0
-	flush := func(end int) error {
+	for _, rows := range extwire.RowParts(req.Rows) {
 		part := req
-		part.Rows = req.Rows[start:end]
+		part.Rows = rows
 		statements, err := w.rowStatements(part)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, statements...)
-		start, size = end, 0
-		return err
-	}
-	for i, row := range req.Rows {
-		if i > start && size >= extwire.DriverRowsBytes {
-			if err := flush(i); err != nil {
-				return nil, err
-			}
-		}
-		for _, value := range row {
-			size += extwire.ValueBytes(value)
-		}
-	}
-	if err := flush(len(req.Rows)); err != nil {
-		return nil, err
 	}
 	return out, nil
 }
@@ -552,16 +536,8 @@ func (w *wasmWriter) rowStatements(req dbdriver.RowStatementsRequest) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	var rowBytes []extwire.DriverRowValue
-	for i, row := range req.Rows {
-		for column, value := range row {
-			if _, ok := value.([]byte); ok {
-				rowBytes = append(rowBytes, extwire.DriverRowValue{Row: i, Column: column})
-			}
-		}
-	}
 	var out []string
 	return out, w.inst.call(context.Background(), extwire.DriverCall{Op: extwire.DriverOpRowStatements, Args: extwire.DriverArgs{
-		Writer: w.id, Request: raw, RowBytes: rowBytes,
+		Writer: w.id, Request: raw, RowBytes: extwire.RowBytesOf(req.Rows),
 	}}, &out)
 }

@@ -126,11 +126,13 @@ The table view, "Copy as INSERT", export and Dump SQL File hold each CLOB, NCLOB
 BLOB value whole in the extension's memory, so a value may be at most **16 MB**,
 measured as Oracle stores it: 16,777,216 bytes for a BLOB, and 8,388,608
 characters for a CLOB or NCLOB (a character counts 2 bytes; the characters are what
-`DBMS_LOB.GETLENGTH` counts). In "Copy as INSERT", export as SQL and dumps, a row
-whose value does not fit one SQL literal is a PL/SQL block that inserts it with an
-empty LOB and appends the value piece by piece (a CLOB as text, an NCLOB or BLOB in
-base64), one block per row however large its values, ending with a line holding
-only `/`.
+`DBMS_LOB.GETLENGTH` counts). An XMLType, JSON or VECTOR value is read as its text,
+which is held and measured the same way, as a CLOB. In "Copy as INSERT", export as
+SQL and dumps, a row whose value does not fit one SQL literal is a PL/SQL block that
+inserts it with an empty LOB and appends the value piece by piece (a CLOB as text,
+an NCLOB or BLOB in base64; the text of an XMLType, JSON or VECTOR value is built
+the same way in a temporary CLOB before the insert), one block per row however
+large its values, ending with a line holding only `/`.
 
 A larger value stops the read before the value is read, with an error naming the
 table, the column and the size, for example `column "DOC" of table "HR"."FILES"

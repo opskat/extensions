@@ -319,3 +319,92 @@ func TestIntegrationDumpNationalValuesRoundTrip(t *testing.T) {
 			"SELECT RAWTOHEX(STANDARD_HASH(NCH, 'SHA256')) FROM "+quoteIdent(dstName)+".NATS WHERE ID = 2"))
 	})
 }
+
+// serializedFixture is a table of the types a dump reads as their text
+// (serializers): XMLType in binary and in CLOB storage, which Oracle lists as
+// virtual columns (the value lives in a hidden one), and on 23ai JSON and
+// VECTOR. Row 1 holds short values, row 2 text past one literal's 4000 bytes
+// (Chinese, quotes and an & in the XML; a vector of 1536 dimensions), row 3 NULLs.
+func serializedFixture(target oracleTarget) (ddl string, fill []string, columns []string) {
+	ddl = "CREATE TABLE SER (ID NUMBER PRIMARY KEY, X XMLTYPE, XC XMLTYPE"
+	columns = []string{"XMLSERIALIZE(CONTENT %s.X AS CLOB)", "XMLSERIALIZE(CONTENT %s.XC AS CLOB)"}
+	fill = []string{
+		`INSERT INTO SER (ID, X, XC) VALUES (1, XMLTYPE('<a>中文 &amp; ''q''</a>'), XMLTYPE('<b/>'))`,
+		`DECLARE l CLOB; BEGIN l := '<a>'; FOR i IN 1..400 LOOP DBMS_LOB.APPEND(l, TO_CLOB('<b n="' || i || '">中文 &amp; ''q''</b>')); END LOOP; ` +
+			`DBMS_LOB.APPEND(l, TO_CLOB('</a>')); INSERT INTO SER (ID, X, XC) VALUES (2, XMLTYPE(l), XMLTYPE(l)); END;`,
+		"INSERT INTO SER (ID) VALUES (3)",
+	}
+	if target.name == "23ai" {
+		ddl += ", J JSON, V VECTOR(*, FLOAT32)"
+		columns = append(columns, "JSON_SERIALIZE(%s.J RETURNING CLOB)", "FROM_VECTOR(%s.V RETURNING CLOB)")
+		fill = append(fill,
+			`UPDATE SER SET J = JSON('{"k":"中文"}'), V = TO_VECTOR('[1,2.5]') WHERE ID = 1`,
+			`DECLARE jt CLOB; vt CLOB; BEGIN jt := '['; vt := '['; FOR i IN 1..400 LOOP DBMS_LOB.APPEND(jt, TO_CLOB('"中文 ''q'' ' || i || '",')); END LOOP; `+
+				`DBMS_LOB.APPEND(jt, TO_CLOB('0]')); FOR i IN 1..1535 LOOP DBMS_LOB.APPEND(vt, TO_CLOB(TO_CHAR(i / 7, 'FM9990.999999') || ',')); END LOOP; `+
+				`DBMS_LOB.APPEND(vt, TO_CLOB('1]')); UPDATE SER SET J = JSON(jt), V = TO_VECTOR(vt) WHERE ID = 2; END;`)
+	}
+	return ddl + ")", fill, columns
+}
+
+// sameSerialized is, per row of src's SER, whether each serialized column of
+// dst's holds the same text ("same", or "null" when both are NULL).
+func sameSerialized(t *testing.T, admin *sql.DB, src, dst string, columns []string) []string {
+	t.Helper()
+	list := make([]string, len(columns))
+	for i, column := range columns {
+		s, d := fmt.Sprintf(column, "s"), fmt.Sprintf(column, "d")
+		list[i] = fmt.Sprintf("CASE WHEN %[1]s IS NULL AND %[2]s IS NULL THEN 'null' "+
+			"WHEN DBMS_LOB.COMPARE(%[1]s, %[2]s) = 0 THEN 'same' ELSE 'differs' END", s, d)
+	}
+	return textRows(t, admin, "SELECT s.ID, "+strings.Join(list, ", ")+" FROM "+quoteIdent(src)+".SER s LEFT JOIN "+
+		quoteIdent(dst)+".SER d ON d.ID = s.ID ORDER BY s.ID")
+}
+
+// A dump keeps XMLType, JSON and VECTOR values: the XMLType columns Oracle
+// lists as virtual are written, and text past one literal is built in a
+// temporary CLOB, so the file runs into another user with the same values; the
+// row copied as INSERT recreates it.
+func TestIntegrationDumpSerializedValuesRoundTrip(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		admin := adminTarget(t, target).open(t, "")
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+		srcName, dstName := "OPSKAT_SER_S"+suffix, "OPSKAT_SER_D"+suffix
+		srcDB := createDumpUser(t, admin, target, srcName)
+		dstDB := createDumpUser(t, admin, target, dstName)
+		src, dst := sqldb.NewSession(srcDB, dialect{}), sqldb.NewSession(dstDB, dialect{})
+		ddl, fill, columns := serializedFixture(target)
+		for _, statement := range append([]string{ddl}, fill...) {
+			_, err := src.Execute(integrationContext(t), statement)
+			require.NoError(t, err, statement)
+		}
+		same := make([]string, 3)
+		for i, values := range []string{"same", "same", "null"} {
+			same[i] = fmt.Sprintf("%d", i+1) + strings.Repeat("|"+values, len(columns))
+		}
+
+		var out bytes.Buffer
+		_, err := src.Dump(integrationContext(t), dbdriver.DumpRequest{Database: srcName, Whole: true, WithData: true, Writer: &out})
+		require.NoError(t, err)
+		assert.Contains(t, out.String(), "VALUES (2, XMLTYPE(l1), XMLTYPE(l2)")
+		runOK(t, dst, dstName, out.String())
+		assert.Equal(t, same, sameSerialized(t, admin, srcName, dstName, columns))
+
+		page, err := src.TableRows(integrationContext(t), srcName, "SER", dbdriver.TableQuery{
+			Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Column: "ID", Operator: dbdriver.OpEqual, Value: "2"}},
+		}, dbdriver.Page{Index: 0, Size: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		writer, err := src.PrepareRowStatements(integrationContext(t), srcName, "SER")
+		require.NoError(t, err)
+		inserts, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+			Kind: dbdriver.RowInsert, Columns: page.Columns, Rows: []map[string]any{columnValues(page, 0)}, OmitDatabase: true,
+		})
+		require.NoError(t, err)
+		require.Len(t, inserts, 1)
+		_, err = dst.Execute(integrationContext(t), "DELETE FROM SER WHERE ID = 2")
+		require.NoError(t, err)
+		_, err = dst.Execute(integrationContext(t), inserts[0])
+		require.NoError(t, err)
+		assert.Equal(t, same, sameSerialized(t, admin, srcName, dstName, columns))
+	})
+}

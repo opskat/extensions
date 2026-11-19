@@ -277,8 +277,13 @@ const (
 
 // RowInsertStatement writes a row whose CLOB, NCLOB or BLOB value does not fit
 // one literal as a PL/SQL block: the INSERT gives each such column an empty LOB
-// and returns its locator, and the value is appended piece by piece. The block
-// ends with a line holding only /. Every other row is the shared INSERT (ok false).
+// and returns its locator, and the value is appended piece by piece. The text of
+// an XMLType, JSON or VECTOR value that does not fit one literal (a
+// 1536-dimension vector does not) is built the same way in a temporary CLOB
+// before the INSERT, which gives it to the column — XMLType through its
+// constructor, which PL/SQL needs, the others converting it as they convert a
+// literal — and frees it then. The block ends with a line holding only /. Every
+// other row is the shared INSERT (ok false).
 //
 // A CLOB's piece is its string literal (TO_CLOB('…')). An NCLOB's and a BLOB's
 // piece is base64 (UTL_ENCODE.BASE64_DECODE), of the bytes or of the text in
@@ -306,11 +311,12 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 	if size == 0 {
 		return "", false, nil
 	}
-	var declare strings.Builder
+	var declare, free strings.Builder
 	names := make([]string, len(row.Columns))
 	values := make([]string, len(row.Columns))
 	variables := make([]string, len(row.Columns))
 	var returning, into []string
+	n := 0
 	for i, column := range row.Columns {
 		names[i] = row.Quote(column.Name)
 		lob := large[i]
@@ -323,8 +329,14 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 			size += len(value)
 			continue
 		}
-		variables[i] = fmt.Sprintf("l%d", len(into)+1)
+		n++
+		variables[i] = fmt.Sprintf("l%d", n)
 		fmt.Fprintf(&declare, "  %s %s;\n", variables[i], lob.kind)
+		if lob.built != "" {
+			values[i] = fmt.Sprintf(lob.built, variables[i])
+			fmt.Fprintf(&free, "  DBMS_LOB.FREETEMPORARY(%s);\n", variables[i])
+			continue
+		}
 		values[i] = lob.empty
 		returning, into = append(returning, names[i]), append(into, variables[i])
 	}
@@ -332,21 +344,39 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 	if row.Modifier != "" {
 		modifier = " " + row.Modifier
 	}
-	insert := fmt.Sprintf("  INSERT INTO %s (%s)%s VALUES (%s) RETURNING %s INTO %s;\n", row.TableRef,
-		strings.Join(names, ", "), modifier, strings.Join(values, ", "), strings.Join(returning, ", "), strings.Join(into, ", "))
+	insert := fmt.Sprintf("  INSERT INTO %s (%s)%s VALUES (%s)", row.TableRef,
+		strings.Join(names, ", "), modifier, strings.Join(values, ", "))
+	if len(into) > 0 {
+		insert += fmt.Sprintf(" RETURNING %s INTO %s", strings.Join(returning, ", "), strings.Join(into, ", "))
+	}
+	insert += ";\n" + free.String()
 	const end = "END;\n/"
 	var b strings.Builder
 	b.Grow(len("DECLARE\n") + declare.Len() + len("BEGIN\n") + len(insert) + size + len(end))
-	b.WriteString("DECLARE\n" + declare.String() + "BEGIN\n" + insert)
-	for i, lob := range large {
-		if lob == nil {
-			continue
-		}
-		for _, piece := range lob.pieces {
-			if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
-				return "", false, err
+	// appends writes the pieces of the built text (built) or of the LOBs.
+	appends := func(built bool) error {
+		for i, lob := range large {
+			if lob == nil || (lob.built != "") != built {
+				continue
+			}
+			if built {
+				b.WriteString("  DBMS_LOB.CREATETEMPORARY(" + variables[i] + ", TRUE);\n")
+			}
+			for _, piece := range lob.pieces {
+				if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
+					return err
+				}
 			}
 		}
+		return nil
+	}
+	b.WriteString("DECLARE\n" + declare.String() + "BEGIN\n")
+	if err := appends(true); err != nil {
+		return "", false, err
+	}
+	b.WriteString(insert)
+	if err := appends(false); err != nil {
+		return "", false, err
 	}
 	b.WriteString(end)
 	return b.String(), true, nil
@@ -355,12 +385,17 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 // largeLob is a LOB value that does not fit one literal: the PL/SQL type of its
 // locator, the empty LOB the INSERT writes, its pieces (parts of the value, not
 // copies: strings of a text, []byte or strings of bytes) and about how many bytes
-// their appends take.
+// their appends take. built is set instead of empty for the text of a type that
+// is not a LOB, built in a temporary CLOB: the INSERT's value, given the variable.
 type largeLob struct {
-	kind, empty string
-	pieces      []any
-	size        int
+	kind, empty, built string
+	pieces             []any
+	size               int
 }
+
+// builtValues is how the INSERT gives each type whose text is built in a
+// temporary CLOB (largeLob.built) its variable.
+var builtValues = map[string]string{"XMLTYPE": "XMLTYPE(%s)", "JSON": "%s", "VECTOR": "%s"}
 
 // pieceCall is the most an append takes besides its piece's literal or base64.
 const pieceCall = 128
@@ -403,12 +438,22 @@ func base64Raw(raw []byte) string {
 	return "UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('" + base64.StdEncoding.EncodeToString(raw) + "'))"
 }
 
-// splitLob reports whether column holds a CLOB, NCLOB or BLOB value too large for
-// one literal, and splits it into pieces that each fit one: a CLOB's string
+// splitLob reports whether column holds a CLOB, NCLOB or BLOB value, or the text
+// of an XMLType, JSON or VECTOR value (builtValues), too large for one literal,
+// and splits it into pieces that each fit one: a CLOB's or that text's string
 // literal (textPieces), an NCLOB's UTF-16 or a BLOB's bytes in base64
 // (maxBase64Piece bytes, a surrogate pair never split).
 func splitLob(column sqldb.InsertColumn) (largeLob, bool) {
 	kind := typeName(column.Type)
+	if built, ok := builtValues[kind]; ok {
+		text, ok := column.Value.(string)
+		if !ok {
+			return largeLob{}, false
+		}
+		lob, ok := clobPieces(text)
+		lob.built = built
+		return lob, ok
+	}
 	switch kind {
 	case "CLOB", "NCLOB":
 		var text string
@@ -420,18 +465,12 @@ func splitLob(column sqldb.InsertColumn) (largeLob, bool) {
 		default:
 			return largeLob{}, false
 		}
-		lob := largeLob{kind: kind, empty: "EMPTY_CLOB()"}
 		if kind == "CLOB" {
-			pieces, size := textPieces(text)
-			if len(pieces) < 2 {
-				return largeLob{}, false
-			}
-			for _, piece := range pieces {
-				lob.pieces = append(lob.pieces, piece)
-			}
-			lob.size = size + len(pieces)*pieceCall
-			return lob, true
+			lob, ok := clobPieces(text)
+			lob.empty = "EMPTY_CLOB()"
+			return lob, ok
 		}
+		lob := largeLob{kind: kind, empty: "EMPTY_CLOB()"}
 		if fitsNationalLiteral(text) {
 			return largeLob{}, false
 		}
@@ -473,6 +512,20 @@ func splitLob(column sqldb.InsertColumn) (largeLob, bool) {
 		return lob, true
 	}
 	return largeLob{}, false
+}
+
+// clobPieces splits text that does not fit one string literal into a CLOB's
+// pieces (textPieces).
+func clobPieces(text string) (largeLob, bool) {
+	pieces, size := textPieces(text)
+	if len(pieces) < 2 {
+		return largeLob{}, false
+	}
+	lob := largeLob{kind: "CLOB", pieces: make([]any, len(pieces)), size: size + len(pieces)*pieceCall}
+	for i, piece := range pieces {
+		lob.pieces[i] = piece
+	}
+	return lob, true
 }
 
 // fitsNationalLiteral reports whether national text is one literal of its own:

@@ -77,6 +77,7 @@ var lobFixture = []string{
 	"CREATE TABLE OVER_NC (ID NUMBER PRIMARY KEY, NC NCLOB)",
 	"CREATE TABLE OVER_B (ID NUMBER PRIMARY KEY, B BLOB)",
 	"CREATE TABLE ROWS256 (ID NUMBER PRIMARY KEY, B BLOB)",
+	"CREATE TABLE OVER_X (ID NUMBER PRIMARY KEY, X XMLTYPE)",
 	// At the limit: a character counts 2 bytes.
 	textLobFill("LOB_C", "C", "CLOB", clobPiece, limitBytes/2),
 	textLobFill("LOB_NC", "NC", "NCLOB", nclobPiece, limitBytes/2),
@@ -84,6 +85,12 @@ var lobFixture = []string{
 	textLobFill("OVER_NC", "NC", "NCLOB", nclobPiece, overBytes/2),
 	blobFill("OVER_B", 1, overBytes),
 	blobFill("ROWS256", 500, rowBytes),
+	// An XMLType whose text is past the limit: 2176 elements of 4096 characters.
+	`DECLARE l CLOB; p VARCHAR2(4096) := '<b>' || RPAD('x', 4089, 'x') || '</b>'; BEGIN
+  DBMS_LOB.CREATETEMPORARY(l, TRUE); DBMS_LOB.APPEND(l, TO_CLOB('<a>'));
+  FOR i IN 1..2176 LOOP DBMS_LOB.APPEND(l, TO_CLOB(p)); END LOOP;
+  DBMS_LOB.APPEND(l, TO_CLOB('</a>')); INSERT INTO OVER_X VALUES (1, XMLTYPE(l)); DBMS_LOB.FREETEMPORARY(l);
+END;`,
 }
 
 // lobContext bounds one large step: the link is slow.
@@ -137,6 +144,11 @@ func TestIntegrationLargeLobs(t *testing.T) {
 			_, err = src.dump(lobContext(t), dbdriver.DumpRequest{Database: srcName, Tables: []string{"OVER_NC"}, WithData: true, Writer: &strings.Builder{}})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), `column "NC" of table `+ref("OVER_NC")+` holds a value of 17.0 MB (8912896 characters)`)
+
+			// An XMLType is measured as its text (as XMLSERIALIZE writes it), which is read as a CLOB.
+			_, err = src.dump(lobContext(t), dbdriver.DumpRequest{Database: srcName, Tables: []string{"OVER_X"}, WithData: true, Writer: &strings.Builder{}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `column "X" of table `+ref("OVER_X")+` holds a value of 17.0 MB (`)
 
 			// The export's read and the table view's page stop the same way.
 			stream, err := src.StreamTableRows(lobContext(t), srcName, "OVER_NC", dbdriver.TableQuery{})

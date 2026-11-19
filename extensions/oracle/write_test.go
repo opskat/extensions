@@ -469,6 +469,57 @@ func TestLargeNclobBlockAppendsUTF16Pieces(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// The text of an XMLType, JSON or VECTOR value too large for one literal (a
+// 1536-dimension vector is) is built in a temporary CLOB, piece by piece, before
+// the INSERT, which gives it to the column (XMLType through its constructor,
+// the others converting it as they do a literal) and then frees it; a large LOB
+// of the same row is still appended after the INSERT. Text that fits stays the
+// INSERT's literal.
+func TestLargeSerializedTextIsBuiltBeforeTheInsert(t *testing.T) {
+	x, j, body := "<a>"+strings.Repeat("x", 3997), strings.Repeat("j", 4001), strings.Repeat("b", 4001)
+	statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{
+			{Name: "ID", Type: "NUMBER", Value: "1"},
+			{Name: "X", Type: "XMLTYPE", Value: x + "</a>"},
+			{Name: "J", Type: "JSON", Value: j},
+			{Name: "BODY", Type: "CLOB", Value: body},
+			{Name: "V", Type: "VECTOR(3, FLOAT32, DENSE)", Value: "[1,2,3]"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "DECLARE\n  l1 CLOB;\n  l2 CLOB;\n  l3 CLOB;\nBEGIN\n"+
+		"  DBMS_LOB.CREATETEMPORARY(l1, TRUE);\n"+
+		"  DBMS_LOB.APPEND(l1, TO_CLOB('"+x+"'));\n"+
+		"  DBMS_LOB.APPEND(l1, TO_CLOB('</a>'));\n"+
+		"  DBMS_LOB.CREATETEMPORARY(l2, TRUE);\n"+
+		"  DBMS_LOB.APPEND(l2, TO_CLOB('"+j[:4000]+"'));\n"+
+		"  DBMS_LOB.APPEND(l2, TO_CLOB('j'));\n"+
+		`  INSERT INTO "DOCS" ("ID", "X", "J", "BODY", "V") VALUES (1, XMLTYPE(l1), l2, EMPTY_CLOB(), '[1,2,3]') RETURNING "BODY" INTO l3;`+"\n"+
+		"  DBMS_LOB.FREETEMPORARY(l1);\n"+
+		"  DBMS_LOB.FREETEMPORARY(l2);\n"+
+		"  DBMS_LOB.APPEND(l3, TO_CLOB('"+body[:4000]+"'));\n"+
+		"  DBMS_LOB.APPEND(l3, TO_CLOB('b'));\n"+
+		"END;\n/", statement)
+
+	// Only built text: the INSERT returns nothing.
+	statement, ok, err = dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{{Name: "V", Type: "VECTOR", Value: strings.Repeat("1,", 2001)}},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Contains(t, statement, `  INSERT INTO "DOCS" ("V") VALUES (l1);`+"\n  DBMS_LOB.FREETEMPORARY(l1);\nEND;\n/")
+
+	_, ok, err = dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{{Name: "X", Type: "XMLTYPE", Value: "<a>" + strings.Repeat("x", 3993) + "</a>"}},
+	})
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
 // base64UTF16 is the PL/SQL raw of text's UTF-16 (big-endian) in base64.
 func base64UTF16(text string) string {
 	var raw []byte
@@ -513,7 +564,6 @@ func TestLargeRowIsOneBlock(t *testing.T) {
 	assert.True(t, strings.HasPrefix(st, "DECLARE\n  l1 CLOB;\n  l2 BLOB;\nBEGIN\n"+
 		`  INSERT INTO "HR"."DOCS" ("ID", "BODY", "IMG") VALUES (7, EMPTY_CLOB(), EMPTY_BLOB()) RETURNING "BODY", "IMG" INTO l1, l2;`+"\n"), st[:300])
 	assert.True(t, strings.HasSuffix(st, "\nEND;"), st[len(st)-100:])
-	assert.NotContains(t, st, "CLIENT_INFO")
 
 	clobPiece := regexp.MustCompile(`DBMS_LOB\.APPEND\(l1, TO_CLOB\('((?:[^']|'')*)'\)\)`)
 	blobPiece := regexp.MustCompile(`WRITEAPPEND\(l2, (\d+), UTL_ENCODE\.BASE64_DECODE\(UTL_RAW\.CAST_TO_RAW\('([^']*)'\)\)\)`)

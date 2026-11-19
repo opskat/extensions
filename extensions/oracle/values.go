@@ -111,8 +111,9 @@ func displayVector[T any](elements []T, format func(T) string) string {
 // The table view reads a page with the table's columns known: the dictionary says
 // which columns hold a type go-ora cannot read (they are serialized to text in the
 // SELECT list), the precision of each TIMESTAMP, and which hold a CLOB, NCLOB or
-// BLOB, read only within maxLobBytes (lobGuard). The dialect marks the query
-// (tableMark) and the connection resolves it here; the page is still
+// BLOB, read, like a serialized column's text, only within maxLobBytes
+// (lobGuard). The dialect marks the query (tableMark) and the connection
+// resolves it here; the page is still
 // "SELECT * FROM <table> ..." when no column needs either. The export's read
 // (StreamTableRows) is the one table query the shared session writes without the
 // mark, so a text that is just that — SELECT * FROM "SCHEMA"."TABLE" with at most
@@ -141,24 +142,29 @@ var serializers = map[string]string{
 // (lobGuard). The size is the value's in Oracle: bytes for a BLOB, 2 bytes per
 // character (as DBMS_LOB.GETLENGTH counts them: UTF-16 code units) for a CLOB or
 // NCLOB, which a Unicode database stores as UTF-16. 16 MB is 16 × 2^20 bytes:
-// a BLOB of 16,777,216 bytes, a CLOB or NCLOB of 8,388,608 characters.
+// a BLOB of 16,777,216 bytes, a CLOB or NCLOB of 8,388,608 characters. An
+// XMLType, JSON or VECTOR value is read as the CLOB of its text (serializers),
+// and measured as that CLOB.
 const maxLobBytes = 16 << 20
 
-// lobUnitBytes is the bytes per DBMS_LOB.GETLENGTH unit of each LOB type.
-var lobUnitBytes = map[string]int{"BLOB": 1, "CLOB": 2, "NCLOB": 2}
+// lobUnitBytes is the bytes per DBMS_LOB.GETLENGTH unit of each type a table
+// read guards, by the dictionary's DATA_TYPE.
+var lobUnitBytes = map[string]int{"BLOB": 1, "CLOB": 2, "NCLOB": 2, "XMLTYPE": 2, "JSON": 2, "VECTOR": 2}
 
 // lobGuard is the size check of one LOB column of a table read: the SELECT list
 // reads the column only when its value is within maxLobBytes, and a guard column
-// at the end of the list (not shown) holds the length of a larger one.
+// at the end of the list (not shown) holds the length of a larger one. expr is
+// the column as the read selects it: its quoted name, or its serialization.
 type lobGuard struct {
-	table, column, dataType string
+	table, column, dataType, expr string
 }
 
-// selects are the guarded column's expression and its guard column's.
-func (g lobGuard) selects(quoted string) (column, guard string) {
+// selects are the guarded column's expression and its guard column's. The guard
+// measures the value once: a serialization is not cheap.
+func (g lobGuard) selects() (column, guard string) {
 	limit := maxLobBytes / lobUnitBytes[g.dataType]
-	return fmt.Sprintf("CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) <= %[2]d THEN %[1]s END", quoted, limit),
-		fmt.Sprintf("CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) > %[2]d THEN DBMS_LOB.GETLENGTH(%[1]s) END", quoted, limit)
+	return fmt.Sprintf("CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) <= %[2]d THEN %[1]s END", g.expr, limit),
+		fmt.Sprintf("NULLIF(GREATEST(DBMS_LOB.GETLENGTH(%[1]s), %[2]d), %[2]d)", g.expr, limit)
 }
 
 // err is the error of a value the guard column says has length (in
@@ -173,7 +179,8 @@ func (g lobGuard) err(length driver.Value) error {
 		unit = "characters"
 	}
 	return fmt.Errorf("oracle: column %s of table %s holds a value of %.1f MB (%d %s); OpsKat reads a CLOB, NCLOB or BLOB "+
-		"value of at most 16 MB (16777216 bytes, a CLOB or NCLOB character counting 2 bytes), so the rows of this table "+
+		"value, or the text of an XMLType, JSON or VECTOR value, of at most 16 MB (16777216 bytes, a character counting "+
+		"2 bytes), so the rows of this table "+
 		"cannot be read, dumped, exported or copied while it holds one", quoteIdent(g.column), g.table,
 		float64(n*int64(lobUnitBytes[g.dataType]))/(1<<20), n, unit)
 }
@@ -195,9 +202,9 @@ const (
 	minLobRowSize = 24
 )
 
-// lobMemoryBytes is the bytes a DBMS_LOB.GETLENGTH unit of each LOB type takes
-// in the extension at most: a byte, or a character's UTF-8.
-var lobMemoryBytes = map[string]int64{"BLOB": 1, "CLOB": 3, "NCLOB": 3}
+// lobMemoryBytes is the bytes a DBMS_LOB.GETLENGTH unit of each guarded type
+// takes in the extension at most: a byte, or a character's UTF-8.
+var lobMemoryBytes = map[string]int64{"BLOB": 1, "CLOB": 3, "NCLOB": 3, "XMLTYPE": 3, "JSON": 3, "VECTOR": 3}
 
 // largestLobRow is the most bytes the LOB values of one row of the read take in
 // the extension (lobMemoryBytes), measured on the server without reading them.
@@ -206,7 +213,7 @@ func (c *conn) largestLobRow(ctx context.Context, guards []lobGuard, rest string
 	sizes := make([]string, len(guards))
 	for i, g := range guards {
 		columns[i] = quoteIdent(g.column)
-		sizes[i] = fmt.Sprintf("NVL(DBMS_LOB.GETLENGTH(%s), 0) * %d", columns[i], lobMemoryBytes[g.dataType])
+		sizes[i] = fmt.Sprintf("NVL(DBMS_LOB.GETLENGTH(%s), 0) * %d", g.expr, lobMemoryBytes[g.dataType])
 	}
 	r, err := c.query(ctx, "SELECT MAX("+strings.Join(sizes, " + ")+") FROM (SELECT "+strings.Join(columns, ", ")+" FROM "+rest+")", nil)
 	if err != nil {
@@ -298,9 +305,9 @@ func (c *conn) queryTable(ctx context.Context, text string, unpaged bool) (drive
 			serialized = true
 		}
 		if _, ok := lobUnitBytes[col.dataType]; ok {
-			g := lobGuard{table: tableRef, column: col.name, dataType: col.dataType}
+			g := lobGuard{table: tableRef, column: col.name, dataType: col.dataType, expr: list[i]}
 			var guard string
-			list[i], guard = g.selects(list[i])
+			list[i], guard = g.selects()
 			guards, guardList = append(guards, g), append(guardList, guard)
 			serialized = true
 		}

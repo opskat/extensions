@@ -476,7 +476,11 @@ func queryForeignKeys(ctx context.Context, conn *sql.Conn, schema, table string)
 
 // dumpColumnsQuery lists the columns SELECT * reads, in table order, with
 // whether each is virtual and how an identity column generates its values.
-const dumpColumnsQuery = "SELECT c.column_name, c.virtual_column, ic.generation_type, c.default_on_null FROM all_tab_cols c " +
+// Oracle also lists an XMLType column as virtual, its value in a hidden column;
+// a true virtual column is of a built-in type (it cannot be of an object type),
+// which has no DATA_TYPE_OWNER, so only that one is left out of the rows.
+const dumpColumnsQuery = "SELECT c.column_name, CASE WHEN c.virtual_column = 'YES' AND c.data_type_owner IS NULL THEN 'YES' ELSE 'NO' END, " +
+	"ic.generation_type, c.default_on_null FROM all_tab_cols c " +
 	"LEFT JOIN all_tab_identity_cols ic ON ic.owner = c.owner AND ic.table_name = c.table_name AND ic.column_name = c.column_name " +
 	"WHERE c.owner = " + ownerIs + " AND c.table_name = :2 AND c.hidden_column = 'NO' ORDER BY c.column_id"
 
