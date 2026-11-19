@@ -131,8 +131,14 @@ which is held and measured the same way, as a CLOB. In "Copy as INSERT", export 
 SQL and dumps, a row whose value does not fit one SQL literal is a PL/SQL block that
 inserts it with an empty LOB and appends the value piece by piece (a CLOB as text,
 an NCLOB or BLOB in base64; the text of an XMLType, JSON or VECTOR value is built
-the same way in a temporary CLOB before the insert), one block per row however
-large its values, ending with a line holding only `/`.
+the same way in a temporary CLOB before the insert), ending with a line holding only
+`/`. When a row appends more than about 1 MB and its table has a primary key, or a
+unique key whose columns are all NOT NULL, the row is several such blocks: the first
+inserts it, each further one finds it by that key with `SELECT … FOR UPDATE` and
+appends about 1 MB more, so running the file reports progress block by block. In a
+table with neither key the row stays one block, of at most 24 MB of SQL text; a row
+that would need more stops the operation before any of it is written, with an error
+naming the table and the size.
 
 A larger value stops the read before the value is read, with an error naming the
 table, the column and the size, for example `column "DOC" of table "HR"."FILES"

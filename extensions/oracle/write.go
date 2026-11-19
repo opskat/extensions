@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -275,6 +276,34 @@ const (
 	maxRawLiteral  = maxTextLiteral / 2
 )
 
+// rowKeyQuery names, in order, the columns of the key that finds one row: the
+// primary key, else the unique key of the fewest columns (then by name) whose
+// columns are all NOT NULL and written by a dump (not virtual or hidden, see
+// dumpColumnsQuery). Only an enabled constraint holds the values unique. A LOB
+// cannot be part of either.
+const rowKeyQuery = "SELECT cc.column_name AS COLUMN_NAME FROM (" +
+	"SELECT c.owner, c.constraint_name FROM all_constraints c " +
+	"WHERE c.owner = " + ownerIs + " AND c.table_name = :2 AND c.constraint_type IN ('P', 'U') AND c.status = 'ENABLED' " +
+	"AND NOT EXISTS (SELECT 1 FROM all_cons_columns k JOIN all_tab_cols tc " +
+	"ON tc.owner = k.owner AND tc.table_name = k.table_name AND tc.column_name = k.column_name " +
+	"WHERE k.owner = c.owner AND k.constraint_name = c.constraint_name " +
+	"AND (tc.nullable = 'Y' OR tc.virtual_column = 'YES' OR tc.hidden_column = 'YES')) " +
+	"ORDER BY DECODE(c.constraint_type, 'P', 0, 1), " +
+	"(SELECT COUNT(*) FROM all_cons_columns k WHERE k.owner = c.owner AND k.constraint_name = c.constraint_name), " +
+	"c.constraint_name FETCH FIRST 1 ROW ONLY) u " +
+	"JOIN all_cons_columns cc ON cc.owner = u.owner AND cc.constraint_name = u.constraint_name " +
+	"ORDER BY cc.position"
+
+// InsertRowKey is the key by which a further block of a large row finds it
+// (RowInsertStatement, rowKeyQuery); nil when the table has none.
+func (dialect) InsertRowKey(ctx context.Context, conn *sql.Conn, database, table string) ([]string, error) {
+	key, err := sqldb.QueryPrimaryKeys(ctx, conn, "COLUMN_NAME", rowKeyQuery, database, table)
+	if err != nil || len(key) == 0 {
+		return nil, err
+	}
+	return key, nil
+}
+
 // RowInsertStatement writes a row whose CLOB, NCLOB or BLOB value does not fit
 // one literal as a PL/SQL block: the INSERT gives each such column an empty LOB
 // and returns its locator, and the value is appended piece by piece. The text of
@@ -293,22 +322,39 @@ const (
 // piece's literal stays within 4000 bytes, so a line of the file stays within
 // SQL*Plus's 4999.
 //
+// Where the statement runs, go-ora holds its whole text several times over (as
+// runes among them, 4 bytes a character), so a row whose appends take more than
+// about 1 MB (blockPieces) is several blocks when the statement writes every
+// column of row.Key (the primary key or a unique key of NOT NULL columns,
+// InsertRowKey) with a value: the first inserts the row and appends its first
+// pieces, each further block finds the row by its key — the key's literals are
+// the INSERT's, so it compares each key column with what the INSERT stored — with
+// SELECT … FOR UPDATE, which locks the row so that its LOBs can be written, and
+// appends the next pieces to the LOBs it names. Without such a key the row stays
+// one block, which depends on nothing another statement left in the session:
+// one of more than maxBlockBytes is refused before any of it is written.
+//
 // A value may take 16 MB (maxLobBytes) and its appends more, all in the
 // extension's memory together with the request and the reply, so they are
 // written into one buffer sized for them up front, each piece encoded as it is
-// written: no copy of the value and no list of its literals. However large, the
-// row is this one block, which depends on nothing another statement left in the
-// session.
+// written: no copy of the value and no list of its literals.
 func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 	large := make([]*largeLob, len(row.Columns))
-	size := 0
+	builtSize, appendSize, pieces := 0, 0, 0
 	for i, column := range row.Columns {
-		if lob, ok := splitLob(column); ok {
-			large[i] = &lob
-			size += lob.size
+		lob, ok := splitLob(column)
+		if !ok {
+			continue
 		}
+		large[i] = &lob
+		if lob.built != "" {
+			builtSize += lob.size
+			continue
+		}
+		appendSize += lob.size
+		pieces += len(lob.pieces)
 	}
-	if size == 0 {
+	if builtSize+appendSize == 0 {
 		return "", false, nil
 	}
 	var declare, free strings.Builder
@@ -326,7 +372,6 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 				return "", false, err
 			}
 			values[i] = value
-			size += len(value)
 			continue
 		}
 		n++
@@ -350,37 +395,136 @@ func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
 		insert += fmt.Sprintf(" RETURNING %s INTO %s", strings.Join(returning, ", "), strings.Join(into, ", "))
 	}
 	insert += ";\n" + free.String()
+
+	where, keyed := "", false
+	if pieces > blockPieces {
+		var err error
+		if where, keyed, err = keyCondition(row); err != nil {
+			return "", false, err
+		}
+	}
 	const end = "END;\n/"
+	header := len("DECLARE\n") + declare.Len() + len("BEGIN\n")
+	first, rest := header+builtSize+len(insert)+appendSize+len(end), 0
+	// selectAll finds the row and locks it, naming every LOB a further block may append to.
+	selectAll := ""
+	if keyed {
+		first = header + builtSize + len(insert) + blockPieces*(maxTextLiteral+pieceCall) + len(end)
+		selectAll = fmt.Sprintf("  SELECT %s INTO %s FROM %s WHERE %s FOR UPDATE;\n",
+			strings.Join(returning, ", "), strings.Join(into, ", "), row.TableRef, where)
+		rest = appendSize + (pieces/blockPieces)*(1+header+len(selectAll)+len(end))
+	}
+	if first > maxBlockBytes {
+		// Appends of more than a block's that the key does not split make it too
+		// large; otherwise the text built before the INSERT does.
+		return "", false, blockTooLarge(row, first, keyed || pieces <= blockPieces)
+	}
+
 	var b strings.Builder
-	b.Grow(len("DECLARE\n") + declare.Len() + len("BEGIN\n") + len(insert) + size + len(end))
-	// appends writes the pieces of the built text (built) or of the LOBs.
-	appends := func(built bool) error {
-		for i, lob := range large {
-			if lob == nil || (lob.built != "") != built {
-				continue
-			}
-			if built {
-				b.WriteString("  DBMS_LOB.CREATETEMPORARY(" + variables[i] + ", TRUE);\n")
-			}
-			for _, piece := range lob.pieces {
-				if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
-					return err
-				}
+	b.Grow(first + rest)
+	b.WriteString("DECLARE\n" + declare.String() + "BEGIN\n")
+	for i, lob := range large {
+		if lob == nil || lob.built == "" {
+			continue
+		}
+		b.WriteString("  DBMS_LOB.CREATETEMPORARY(" + variables[i] + ", TRUE);\n")
+		for _, piece := range lob.pieces {
+			if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
+				return "", false, err
 			}
 		}
-		return nil
-	}
-	b.WriteString("DECLARE\n" + declare.String() + "BEGIN\n")
-	if err := appends(true); err != nil {
-		return "", false, err
 	}
 	b.WriteString(insert)
-	if err := appends(false); err != nil {
-		return "", false, err
+	// The appends, column by column and piece by piece. With a key a further
+	// block starts every blockPieces pieces, declaring and selecting the LOBs
+	// those pieces go to: the ones whose pieces (from offsets[j] on) meet them.
+	offsets, total := make([]int, len(large)), 0
+	for i, lob := range large {
+		if lob != nil && lob.built == "" {
+			offsets[i], total = total, total+len(lob.pieces)
+		}
+	}
+	written := 0
+	for i, lob := range large {
+		if lob == nil || lob.built != "" {
+			continue
+		}
+		for _, piece := range lob.pieces {
+			if keyed && written > 0 && written%blockPieces == 0 {
+				var lobs, vars []string
+				var declared strings.Builder
+				for j, other := range large {
+					if other == nil || other.built != "" || offsets[j] >= written+blockPieces || offsets[j]+len(other.pieces) <= written {
+						continue
+					}
+					lobs, vars = append(lobs, names[j]), append(vars, variables[j])
+					fmt.Fprintf(&declared, "  %s %s;\n", variables[j], other.kind)
+				}
+				fmt.Fprintf(&b, "%s\nDECLARE\n%sBEGIN\n  SELECT %s INTO %s FROM %s WHERE %s FOR UPDATE;\n", end,
+					declared.String(), strings.Join(lobs, ", "), strings.Join(vars, ", "), row.TableRef, where)
+			}
+			if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
+				return "", false, err
+			}
+			written++
+		}
 	}
 	b.WriteString(end)
 	return b.String(), true, nil
 }
+
+// keyCondition is the condition that finds the row by row.Key, each column
+// compared with the literal the INSERT writes for it; ok false when there is no
+// key or the statement does not write every key column with a value.
+func keyCondition(row sqldb.InsertRow) (string, bool, error) {
+	if len(row.Key) == 0 {
+		return "", false, nil
+	}
+	conditions := make([]string, len(row.Key))
+	for i, name := range row.Key {
+		j := slices.IndexFunc(row.Columns, func(c sqldb.InsertColumn) bool { return c.Name == name })
+		if j < 0 || row.Columns[j].Value == nil {
+			return "", false, nil
+		}
+		literal, err := row.Literals.Literal(row.Columns[j].Value, row.Columns[j].Type)
+		if err != nil {
+			return "", false, err
+		}
+		conditions[i] = row.Quote(name) + " = " + literal
+	}
+	return strings.Join(conditions, " AND "), true, nil
+}
+
+// blockTooLarge is the error for a row whose (first) block would take size bytes,
+// more than maxBlockBytes: because of the text built before the INSERT (built),
+// or because the row cannot be found by a key to append the rest in further blocks.
+func blockTooLarge(row sqldb.InsertRow, size int, built bool) error {
+	reason := "the table has neither a primary key nor a unique key of NOT NULL columns by which further blocks could find the row"
+	switch {
+	case built:
+		reason = "the text of its XMLType, JSON or VECTOR values is built within the first block"
+	case len(row.Key) > 0:
+		quoted := make([]string, len(row.Key))
+		for i, name := range row.Key {
+			quoted[i] = row.Quote(name)
+		}
+		reason = "the statement does not write the columns that find the row (" + strings.Join(quoted, ", ") + ") with values"
+	}
+	return fmt.Errorf("oracle: a row of table %s would be a PL/SQL block of about %.1f MB (%d bytes) of SQL text, "+
+		"more than the %d MB (%d bytes) one block may take: %s",
+		row.TableRef, float64(size)/(1<<20), size, maxBlockBytes>>20, maxBlockBytes, reason)
+}
+
+// blockPieces is the most pieces one block appends when a row is several blocks:
+// about 1 MB of appends (blockAppendBytes), a piece's append taking at most its
+// literal or base64 of maxTextLiteral bytes and pieceCall. maxBlockBytes is the
+// most SQL text a row's one block may take: a 16 MB BLOB's block (about 23 MB)
+// runs within the extension's memory, a 50 MB one exhausts it.
+const (
+	blockAppendBytes = 1 << 20
+	blockPieces      = blockAppendBytes / (maxTextLiteral + pieceCall)
+	maxBlockBytes    = 24 << 20
+)
 
 // largeLob is a LOB value that does not fit one literal: the PL/SQL type of its
 // locator, the empty LOB the INSERT writes, its pieces (parts of the value, not

@@ -20,6 +20,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// expectRowKey answers the query for the columns that find a row of schema.table
+// (InsertRowKey) with key; none when key is empty.
+func expectRowKey(mock sqlmock.Sqlmock, schema, table string, key ...string) {
+	rows := sqlmock.NewRows([]string{"COLUMN_NAME"})
+	for _, column := range key {
+		rows.AddRow(column)
+	}
+	mock.ExpectQuery(`constraint_type IN \('P', 'U'\)`).WithArgs(schema, table).WillReturnRows(rows)
+}
+
 // expectEmpColumns answers the column-definition query for HR.EMP: a number key,
 // text, a RAW, a BLOB, a DATE and a TIMESTAMP WITH TIME ZONE.
 func expectEmpColumns(mock sqlmock.Sqlmock) {
@@ -42,6 +52,7 @@ func TestRowStatementsWriteOracleLiterals(t *testing.T) {
 	ctx := context.Background()
 
 	expectEmpColumns(mock)
+	expectRowKey(mock, "HR", "EMP", "ID")
 	writer, err := session.PrepareRowStatements(ctx, "HR", "EMP")
 	require.NoError(t, err)
 
@@ -244,6 +255,7 @@ var valsColumns = []string{"ID", "N", "FL", "BF", "BD", "D", "TS", "TS0", "TS9",
 func TestRowStatementsWriteEachOracleType(t *testing.T) {
 	session, mock := newMockSession(t)
 	expectValsColumns(mock)
+	expectRowKey(mock, "HR", "VALS")
 	writer, err := session.PrepareRowStatements(context.Background(), "HR", "VALS")
 	require.NoError(t, err)
 
@@ -315,6 +327,7 @@ func expectDocsColumns(mock sqlmock.Sqlmock) {
 func TestRowStatementsWriteLargeLobsAsBlocks(t *testing.T) {
 	session, mock := newMockSession(t)
 	expectDocsColumns(mock)
+	expectRowKey(mock, "HR", "DOCS", "ID")
 	writer, err := session.PrepareRowStatements(context.Background(), "HR", "DOCS")
 	require.NoError(t, err)
 
@@ -534,10 +547,12 @@ func base64Bytes(raw []byte) string {
 	return "UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('" + base64.StdEncoding.EncodeToString(raw) + "'))"
 }
 
-// However large its values (up to maxLobBytes each), a row is one PL/SQL block
-// that inserts it with empty LOBs and appends every piece to the locators the
-// INSERT returns (spec decision 10): it does not depend on what another
-// statement left in the session. The pieces are the value.
+// In a table with neither a primary key nor a unique key of NOT NULL columns (no
+// InsertRow.Key), a row is one PL/SQL block however many pieces it appends (up to
+// maxBlockBytes, TestRowWithoutAKeyIsOneBlockOfAtMost24MB): it inserts the row
+// with empty LOBs and appends every piece to the locators the INSERT returns
+// (spec decision 10), depending on nothing another statement left in the
+// session. The pieces are the value.
 func TestLargeRowIsOneBlock(t *testing.T) {
 	var body strings.Builder
 	for i := 0; body.Len() < 2_500_000; i++ {
@@ -580,4 +595,224 @@ func TestLargeRowIsOneBlock(t *testing.T) {
 	}
 	assert.Equal(t, body.String(), text.String())
 	assert.Equal(t, img, data)
+}
+
+// largeRowValues are a row's values too large for one block of about 1 MB: a
+// CLOB of 2.5 MB with quotes and Chinese, a BLOB of 1.2 MB.
+func largeRowValues() (string, []byte) {
+	var body strings.Builder
+	for i := 0; body.Len() < 2_500_000; i++ {
+		fmt.Fprintf(&body, "line %d 'q' 中文\n", i)
+	}
+	img := make([]byte, 1_200_000)
+	for i := range img {
+		img[i] = byte(i * 7)
+	}
+	return body.String(), img
+}
+
+var (
+	clobAppend  = regexp.MustCompile(`DBMS_LOB\.APPEND\((l\d+), TO_CLOB\('((?:[^']|'')*)'\)\)`)
+	nclobAppend = regexp.MustCompile(`DBMS_LOB\.APPEND\((l\d+), TO_NCLOB\(UTL_I18N\.RAW_TO_NCHAR\(UTL_ENCODE\.BASE64_DECODE\(UTL_RAW\.CAST_TO_RAW\('([^']*)'\)\), 'AL16UTF16'\)\)\)`)
+	blobAppend  = regexp.MustCompile(`WRITEAPPEND\((l\d+), (\d+), UTL_ENCODE\.BASE64_DECODE\(UTL_RAW\.CAST_TO_RAW\('([^']*)'\)\)\)`)
+	appendLine  = regexp.MustCompile(`^  DBMS_LOB\.(APPEND|WRITEAPPEND)\((l\d+), `)
+)
+
+// appended is what statements append to each variable, in order: a CLOB's text,
+// an NCLOB's text (from its UTF-16), a BLOB's bytes.
+func appended(t *testing.T, statements ...string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, st := range statements {
+		for _, m := range clobAppend.FindAllStringSubmatch(st, -1) {
+			out[m[1]] += strings.ReplaceAll(m[2], "''", "'")
+		}
+		for _, m := range nclobAppend.FindAllStringSubmatch(st, -1) {
+			raw, err := base64.StdEncoding.DecodeString(m[2])
+			require.NoError(t, err)
+			units := make([]uint16, len(raw)/2)
+			for i := range units {
+				units[i] = uint16(raw[2*i])<<8 | uint16(raw[2*i+1])
+			}
+			out[m[1]] += string(utf16.Decode(units))
+		}
+		for _, m := range blobAppend.FindAllStringSubmatch(st, -1) {
+			raw, err := base64.StdEncoding.DecodeString(m[3])
+			require.NoError(t, err)
+			assert.Equal(t, m[2], strconv.Itoa(len(raw)))
+			out[m[1]] += string(raw)
+		}
+	}
+	return out
+}
+
+// outline is statement with each append's piece left out and each run of appends
+// to one variable one line "  DBMS_LOB.APPEND(l1, …) × n", for a golden file a
+// reader can follow.
+func outline(statement string) string {
+	for _, call := range []*regexp.Regexp{clobAppend, nclobAppend} {
+		statement = call.ReplaceAllString(statement, "DBMS_LOB.APPEND($1, …)")
+	}
+	statement = blobAppend.ReplaceAllString(statement, "WRITEAPPEND($1, …)")
+	var b strings.Builder
+	lines := strings.Split(statement, "\n")
+	for i := 0; i < len(lines); i++ {
+		m := appendLine.FindStringSubmatch(lines[i])
+		if m == nil {
+			b.WriteString(lines[i] + "\n")
+			continue
+		}
+		n := 1
+		for i+1 < len(lines) && lines[i+1] == lines[i] {
+			i, n = i+1, n+1
+		}
+		fmt.Fprintf(&b, "  DBMS_LOB.%s(%s, …) × %d\n", m[1], m[2], n)
+	}
+	return b.String()
+}
+
+// splitBlocks splits a row's statement as the run does and checks that each
+// block stays within about 1 MB of appends.
+func splitBlocks(t *testing.T, statement string) []string {
+	t.Helper()
+	statements, err := splitOracle(context.Background(), statement)
+	require.NoError(t, err)
+	blocks := make([]string, len(statements))
+	for i, st := range statements {
+		blocks[i] = st.Text
+		assert.LessOrEqual(t, len(st.Text), 1_100_000, "block %d", i)
+	}
+	return blocks
+}
+
+// A row whose appends take more than about 1 MB, in a table with a primary key
+// (InsertRowKey, looked up when the writer is prepared), is several blocks, each
+// ending with a line holding only /: the first inserts the row with empty LOBs
+// and appends its first pieces; each further one finds the row by its key with
+// SELECT … FOR UPDATE, which locks it so its LOBs can be written, and appends the
+// next pieces of about 1 MB to the LOBs it names. No block depends on what
+// another left in the session. The pieces are the values (spec decision 10).
+func TestLargeRowIsSeveralBlocksFoundByThePrimaryKey(t *testing.T) {
+	session, mock := newMockSession(t)
+	expectDocsColumns(mock)
+	expectRowKey(mock, "HR", "DOCS", "ID")
+	writer, err := session.PrepareRowStatements(context.Background(), "HR", "DOCS")
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	body, img := largeRowValues()
+	statements, err := writer.RowStatements(dbdriver.RowStatementsRequest{
+		Kind: dbdriver.RowInsert, Columns: []string{"ID", "BODY", "IMG", "NOTE"},
+		Rows: []map[string]any{{"ID": "7", "BODY": body, "IMG": img, "NOTE": "it's"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, statements, 1)
+	assert.True(t, strings.HasSuffix(statements[0], "\nEND;\n/"))
+	valuesGolden(t, "large_row_primary_key.txt", outline(statements[0]))
+
+	blocks := splitBlocks(t, statements[0])
+	assert.Len(t, blocks, 5)
+	got := appended(t, blocks...)
+	assert.Equal(t, body, got["l1"])
+	assert.Equal(t, string(img), got["l2"])
+}
+
+// A unique key of NOT NULL columns finds the row as a primary key does (which
+// key, InsertRowKey decides); its values, a RAW, national text outside ASCII and
+// GBK and a DATE among them, are written with the INSERT's literals, so the
+// condition compares each column with what the INSERT stored.
+func TestLargeRowIsFoundByACompositeKeyOfAnyType(t *testing.T) {
+	var text strings.Builder
+	for text.Len() < 1_800_000 {
+		text.WriteString("中文😀'x\\ ")
+	}
+	statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals, Key: []string{"CODE", "NAME", "BORN"},
+		Columns: []sqldb.InsertColumn{
+			{Name: "CODE", Type: "RAW(16)", Value: []byte{0x00, 0xff, 0x10}},
+			{Name: "NAME", Type: "NVARCHAR2(20)", Value: "张三😀"},
+			{Name: "BORN", Type: "DATE", Value: "2024-02-29 13:14:15"},
+			{Name: "NBODY", Type: "NCLOB", Value: text.String()},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	valuesGolden(t, "large_row_composite_key.txt", outline(statement))
+	blocks := splitBlocks(t, statement)
+	assert.Len(t, blocks, 3)
+	assert.Equal(t, text.String(), appended(t, blocks...)["l1"])
+}
+
+// A table with neither key keeps the row one block (TestLargeRowIsOneBlock), and so
+// does a statement that does not write every key column with a value: a later
+// block could not find the row.
+func TestLargeRowWithoutItsKeyIsOneBlock(t *testing.T) {
+	body, img := largeRowValues()
+	for name, columns := range map[string][]sqldb.InsertColumn{
+		"key not written": {{Name: "BODY", Type: "CLOB", Value: body}, {Name: "IMG", Type: "BLOB", Value: img}},
+		"key without a value": {{Name: "ID", Type: "NUMBER"}, {Name: "BODY", Type: "CLOB", Value: body},
+			{Name: "IMG", Type: "BLOB", Value: img}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
+				TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals, Key: []string{"ID"}, Columns: columns,
+			})
+			require.NoError(t, err)
+			require.True(t, ok)
+			statements, err := splitOracle(context.Background(), statement)
+			require.NoError(t, err)
+			assert.Len(t, statements, 1)
+		})
+	}
+}
+
+// Without a key a 16 MB BLOB (the largest value, maxLobBytes) is one block of
+// about 23 MB, which runs (integration_lob_test.go); a row whose one block would
+// take more than 24 MB of SQL text stops the statement before any of it is
+// written, naming the table and the size, instead of writing a block that would
+// exhaust the extension's memory where it runs. With a key the same row is blocks
+// of about 1 MB.
+func TestRowWithoutAKeyIsOneBlockOfAtMost24MB(t *testing.T) {
+	b16, b2 := make([]byte, maxLobBytes), make([]byte, 2<<20)
+	statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"BIG"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{{Name: "ID", Type: "NUMBER", Value: "1"}, {Name: "B", Type: "BLOB", Value: b16}},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 1, strings.Count(statement, "\n/"))
+	assert.Greater(t, len(statement), 22_000_000)
+	valuesGolden(t, "large_row_no_key.txt", outline(statement))
+
+	row := sqldb.InsertRow{
+		TableRef: `"BIG"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{{Name: "ID", Type: "NUMBER", Value: "1"}, {Name: "B", Type: "BLOB", Value: b16},
+			{Name: "B2", Type: "BLOB", Value: b2}},
+	}
+	_, _, err = dialect{}.RowInsertStatement(row)
+	require.Error(t, err)
+	assert.Regexp(t, `^oracle: a row of table "BIG" would be a PL/SQL block of about 2\d\.\d MB \(\d+ bytes\) of SQL text, `+
+		`more than the 24 MB \(25165824 bytes\) one block may take: the table has neither a primary key nor a unique key `+
+		`of NOT NULL columns by which further blocks could find the row$`, err.Error())
+
+	// The same row whose statement leaves its key out.
+	row.Key = []string{"ID", "CODE"}
+	_, _, err = dialect{}.RowInsertStatement(row)
+	assert.ErrorContains(t, err, `one block may take: the statement does not write the columns that find the row ("ID", "CODE") with values`)
+
+	// The text of an XMLType, JSON or VECTOR value is built within one block,
+	// key or not: a value whose literal pieces pass 24 MB (quotes count twice).
+	_, _, err = dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"BIG"`, Quote: quoteIdent, Literals: literals, Key: []string{"ID"},
+		Columns: []sqldb.InsertColumn{{Name: "ID", Type: "NUMBER", Value: "1"},
+			{Name: "J", Type: "JSON", Value: strings.Repeat(`'`, 13<<20)}},
+	})
+	assert.ErrorContains(t, err, `one block may take: the text of its XMLType, JSON or VECTOR values is built within the first block`)
+
+	row.Key = []string{"ID"}
+	statement, ok, err = dialect{}.RowInsertStatement(row)
+	require.NoError(t, err)
+	require.True(t, ok)
+	blocks := splitBlocks(t, statement)
+	assert.Greater(t, len(blocks), 20)
 }

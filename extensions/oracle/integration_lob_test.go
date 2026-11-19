@@ -78,6 +78,15 @@ var lobFixture = []string{
 	"CREATE TABLE OVER_B (ID NUMBER PRIMARY KEY, B BLOB)",
 	"CREATE TABLE ROWS256 (ID NUMBER PRIMARY KEY, B BLOB)",
 	"CREATE TABLE OVER_X (ID NUMBER PRIMARY KEY, X XMLTYPE)",
+	// A row of three values at the limit, in a table with a primary key.
+	"CREATE TABLE BIG16 (ID NUMBER PRIMARY KEY, C CLOB, NC NCLOB, B BLOB)",
+	// No key that finds a row: a unique key with a nullable column does not.
+	"CREATE TABLE NOKEY_B (ID NUMBER UNIQUE, B BLOB)",
+	"CREATE TABLE NOKEY_OVER (ID NUMBER, B BLOB, B2 BLOB)",
+	// A unique key of NOT NULL columns of a RAW, national text and a DATE, and one
+	// with a nullable column that does not find a row.
+	"CREATE TABLE UKEY (ID NUMBER UNIQUE, CODE RAW(16) NOT NULL, NAME NVARCHAR2(20) NOT NULL, D DATE NOT NULL, B BLOB, " +
+		"CONSTRAINT UKEY_K UNIQUE (CODE, NAME, D))",
 	// At the limit: a character counts 2 bytes.
 	textLobFill("LOB_C", "C", "CLOB", clobPiece, limitBytes/2),
 	textLobFill("LOB_NC", "NC", "NCLOB", nclobPiece, limitBytes/2),
@@ -85,6 +94,15 @@ var lobFixture = []string{
 	textLobFill("OVER_NC", "NC", "NCLOB", nclobPiece, overBytes/2),
 	blobFill("OVER_B", 1, overBytes),
 	blobFill("ROWS256", 500, rowBytes),
+	"INSERT INTO BIG16 SELECT 1, (SELECT C FROM LOB_C), (SELECT NC FROM LOB_NC), (SELECT B FROM LOB_B) FROM dual",
+	"INSERT INTO NOKEY_B SELECT 1, B FROM LOB_B",
+	"INSERT INTO NOKEY_OVER SELECT 1, B, B FROM LOB_B",
+	// 2 MB: two blocks' appends and more.
+	fmt.Sprintf(`DECLARE l BLOB; %s
+  INSERT INTO UKEY VALUES (NULL, HEXTORAW('00FF10'), UNISTR('\4E2D\6587\D83D\DE00'),
+    TO_DATE('2024-02-29 13:14:15', 'YYYY-MM-DD HH24:MI:SS'), EMPTY_BLOB()) RETURNING B INTO l;
+  FOR i IN 1..128 LOOP DBMS_LOB.WRITEAPPEND(l, 16384, UTL_RAW.OVERLAY(UTL_RAW.CAST_FROM_BINARY_INTEGER(i), p)); END LOOP;
+END;`, blobPiece),
 	// An XMLType whose text is past the limit: 2176 elements of 4096 characters.
 	`DECLARE l CLOB; p VARCHAR2(4096) := '<b>' || RPAD('x', 4089, 'x') || '</b>'; BEGIN
   DBMS_LOB.CREATETEMPORARY(l, TRUE); DBMS_LOB.APPEND(l, TO_CLOB('<a>'));
@@ -223,6 +241,88 @@ func TestIntegrationLargeLobs(t *testing.T) {
 			})
 		}
 
+		// A row of three values at the limit (about 62 MB of appends) is blocks of
+		// about 1 MB, the later ones finding the row by its primary key: the run
+		// reports progress as it goes and holds no more than a block of it at a time.
+		t.Run("16 MB CLOB, NCLOB and BLOB in one row", func(t *testing.T) {
+			d := load(t)
+			src, dst := d.open(t, srcUser, srcName), d.open(t, dstUser, dstName)
+			file := filepath.Join(t.TempDir(), "big16.sql")
+			start := time.Now()
+			dumpToFile(t, src, dbdriver.DumpRequest{Database: srcName, Tables: []string{"BIG16"}, WithData: true}, file)
+			dumped, dumpPeak := time.Since(start), d.memory.MiB()
+			blocks, largest := blockSizes(t, file)
+			assert.Greater(t, blocks, 50)
+			assert.Less(t, largest, 2<<20)
+			dump, err := os.ReadFile(file)
+			require.NoError(t, err)
+			assert.Contains(t, string(dump), `  SELECT "C" INTO l1 FROM "BIG16" WHERE "ID" = 1 FOR UPDATE;`)
+			size := len(dump)
+
+			ran, runPeak, progress, gap := runFile(t, dst, dstName, file)
+			assert.GreaterOrEqual(t, progress, blocks/2)
+			assert.Equal(t, []string{"0|0|0"}, textRows(t, admin, fmt.Sprintf(
+				"SELECT DBMS_LOB.COMPARE(s.C, d.C), DBMS_LOB.COMPARE(s.NC, d.NC), DBMS_LOB.COMPARE(s.B, d.B) "+
+					"FROM %s.BIG16 s JOIN %s.BIG16 d ON d.ID = s.ID", quoteIdent(srcName), quoteIdent(dstName))))
+			require.NoError(t, src.healthy(lobContext(t)))
+			require.NoError(t, dst.healthy(lobContext(t)))
+			t.Logf("BIG16: dump %s (%.1f MB file, %d blocks, largest %.2f MB), run %s with %d progress reports, longest gap %s; "+
+				"peak guest memory after the dump %.1f MiB, after the run %.1f MiB",
+				dumped.Round(time.Second), float64(size)/1e6, blocks, float64(largest)/1e6, ran.Round(time.Second), progress,
+				gap.Round(time.Millisecond), dumpPeak, runPeak)
+		})
+
+		// A unique key of NOT NULL columns finds the row when there is no primary
+		// key; its RAW, national and DATE values are the INSERT's literals.
+		t.Run("unique key", func(t *testing.T) {
+			d := load(t)
+			src, dst := d.open(t, srcUser, srcName), d.open(t, dstUser, dstName)
+			file := filepath.Join(t.TempDir(), "ukey.sql")
+			dumpToFile(t, src, dbdriver.DumpRequest{Database: srcName, Tables: []string{"UKEY"}, WithData: true}, file)
+			blocks, _ := blockSizes(t, file)
+			assert.Equal(t, 3, blocks)
+			dump, err := os.ReadFile(file)
+			require.NoError(t, err)
+			assert.Contains(t, string(dump), `  SELECT "B" INTO l1 FROM "UKEY" WHERE "CODE" = HEXTORAW('00ff10') AND `+
+				`"NAME" = UNISTR('\4E2D\6587\D83D\DE00') AND "D" = TO_DATE('2024-02-29 13:14:15', 'YYYY-MM-DD HH24:MI:SS') FOR UPDATE;`)
+			runFile(t, dst, dstName, file)
+			assert.Equal(t, []string{"0|1"}, textRows(t, admin, fmt.Sprintf(
+				"SELECT DBMS_LOB.COMPARE(s.B, d.B), COUNT(*) OVER () FROM %s.UKEY s JOIN %s.UKEY d "+
+					"ON d.CODE = s.CODE AND d.NAME = s.NAME AND d.D = s.D", quoteIdent(srcName), quoteIdent(dstName))))
+			require.NoError(t, dst.healthy(lobContext(t)))
+		})
+
+		// Without a key a row is one block: a 16 MB BLOB's (about 23 MB) runs; one
+		// over 24 MB stops the dump before any of the row is written, naming the
+		// table and the size, and traps nothing.
+		t.Run("no key", func(t *testing.T) {
+			d := load(t)
+			src, dst := d.open(t, srcUser, srcName), d.open(t, dstUser, dstName)
+			file := filepath.Join(t.TempDir(), "nokey.sql")
+			start := time.Now()
+			dumpToFile(t, src, dbdriver.DumpRequest{Database: srcName, Tables: []string{"NOKEY_B"}, WithData: true}, file)
+			dumped := time.Since(start)
+			blocks, largest := blockSizes(t, file)
+			assert.Equal(t, 1, blocks)
+			assert.Greater(t, largest, 22_000_000)
+			ran, runPeak, _, _ := runFile(t, dst, dstName, file)
+			assert.Equal(t, []string{"0"}, textRows(t, admin, fmt.Sprintf(
+				"SELECT DBMS_LOB.COMPARE(s.B, d.B) FROM %s.NOKEY_B s JOIN %s.NOKEY_B d ON d.ID = s.ID",
+				quoteIdent(srcName), quoteIdent(dstName))))
+			t.Logf("NOKEY_B: dump %s, one block of %.1f MB, run %s; peak guest memory %.1f MiB",
+				dumped.Round(time.Second), float64(largest)/1e6, ran.Round(time.Second), runPeak)
+
+			var out strings.Builder
+			_, err := src.dump(lobContext(t), dbdriver.DumpRequest{Database: srcName, Tables: []string{"NOKEY_OVER"}, WithData: true, Writer: &out})
+			require.Error(t, err)
+			assert.Regexp(t, `a row of table "NOKEY_OVER" would be a PL/SQL block of about 4\d\.\d MB \(\d+ bytes\) of SQL text, `+
+				`more than the 24 MB \(25165824 bytes\) one block may take: the table has neither a primary key nor a unique key`, err.Error())
+			assert.NotContains(t, out.String(), `INSERT INTO "NOKEY_OVER"`)
+			require.NoError(t, src.healthy(lobContext(t)))
+			require.NoError(t, dst.healthy(lobContext(t)))
+			t.Logf("NOKEY_OVER: %v; peak guest memory %.1f MiB", err, d.memory.MiB())
+		})
+
 		t.Run("export 30 rows of 256 KB", func(t *testing.T) {
 			d := load(t)
 			src := d.open(t, srcUser, srcName)
@@ -288,6 +388,49 @@ func countBlocks(t *testing.T, file string) int {
 	}
 	require.NoError(t, scanner.Err())
 	return n
+}
+
+// blockSizes counts the lines holding only / in file (one per PL/SQL block) and
+// the bytes of the most text up to one (a block and the statements before it).
+func blockSizes(t *testing.T, file string) (blocks, largest int) {
+	t.Helper()
+	f, err := os.Open(file)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<20), 64<<20)
+	size := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		size += len(line) + 1
+		if line == "/" {
+			blocks, largest, size = blocks+1, max(largest, size), 0
+		}
+	}
+	require.NoError(t, scanner.Err())
+	return blocks, largest
+}
+
+// runFile runs file into schema as Run SQL File does, requiring
+// every statement to succeed, and returns how long it took, the instance's peak
+// memory after it, how often it reported progress and the longest wait for a report.
+func runFile(t *testing.T, s *wasmSession, schema, file string) (time.Duration, float64, int, time.Duration) {
+	t.Helper()
+	info, err := os.Stat(file)
+	require.NoError(t, err)
+	f, err := os.Open(file)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	start := time.Now()
+	last, reports, gap := start, 0, time.Duration(0)
+	result, err := s.runScript(lobContext(t), dbdriver.ScriptRequest{Database: schema, Script: f, Size: info.Size(),
+		Progress: func(dbdriver.ScriptProgress) {
+			now := time.Now()
+			reports, gap, last = reports+1, max(gap, now.Sub(last)), now
+		}})
+	require.NoError(t, err)
+	require.Nil(t, result.Failure)
+	return time.Since(start), s.driver.memory.MiB(), reports, gap
 }
 
 // sentRows are page's rows as the app hands them back to RowStatements: by

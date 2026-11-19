@@ -221,9 +221,11 @@ func schemaDump(t *testing.T) []byte {
 		[]any{"ID", "NO", nil, "NO"}, []any{"DEPT_ID", "NO", nil, "NO"}, []any{"REGION_ID", "NO", nil, "NO"},
 		[]any{"EMAIL", "NO", nil, "NO"}, []any{"SALARY", "NO", nil, "NO"}, []any{"BONUS", "YES", nil, "NO"}))
 
+	expectRowKey(mock, "HR", "DEPT", "ID")
 	mock.ExpectQuery(rowColumnsPattern).WithArgs("HR", "DEPT").WillReturnRows(columnRows().
 		AddRow("ID", "NUMBER", "NO", nil, nil, 1, 1, 1).
 		AddRow("NAME", "VARCHAR2(30)", "YES", nil, "Department's name", 0, 0, 0))
+	expectRowKey(mock, "HR", "EMP", "ID")
 	mock.ExpectQuery(rowColumnsPattern).WithArgs("HR", "EMP").WillReturnRows(columnRows().
 		AddRow("ID", "NUMBER", "NO", `"HR"."EMP_SEQ"."NEXTVAL"`, nil, 0, 0, 0).
 		AddRow("DEPT_ID", "NUMBER", "YES", nil, nil, 0, 0, 0).
@@ -393,6 +395,7 @@ func programsDump(t *testing.T) []byte {
 	mock.ExpectQuery(foreignKeysPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(rowsOf(foreignKeyColumns))
 	mock.ExpectQuery(dumpColumnsPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(rowsOf(dumpColumnColumns,
 		[]any{"ID", "NO", "ALWAYS", "NO"}, []any{"NAME", "NO", nil, "NO"}))
+	expectRowKey(mock, "HR", "CATEGORIES", "ID")
 	mock.ExpectQuery(rowColumnsPattern).WithArgs("HR", "CATEGORIES").WillReturnRows(columnRows().
 		AddRow("ID", "NUMBER", "NO", nil, nil, 1, 1, 1).
 		AddRow("NAME", "VARCHAR2(20)", "YES", nil, nil, 0, 0, 0))
@@ -402,6 +405,7 @@ func programsDump(t *testing.T) []byte {
 	mock.ExpectQuery(foreignKeysPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(foreignKeyColumns))
 	mock.ExpectQuery(dumpColumnsPattern).WithArgs("HR", "ITEMS").WillReturnRows(rowsOf(dumpColumnColumns,
 		[]any{"ID", "NO", nil, "NO"}, []any{"PRICE", "NO", nil, "NO"}))
+	expectRowKey(mock, "HR", "ITEMS", "ID")
 	mock.ExpectQuery(rowColumnsPattern).WithArgs("HR", "ITEMS").WillReturnRows(columnRows().
 		AddRow("ID", "NUMBER", "NO", nil, nil, 0, 0, 0).
 		AddRow("PRICE", "NUMBER", "YES", nil, nil, 0, 0, 0))
