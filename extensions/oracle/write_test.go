@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/opskat/opskat/pkg/dbdriver"
@@ -301,11 +306,12 @@ func expectDocsColumns(mock sqlmock.Sqlmock) {
 
 // A row whose LOB does not fit one literal (4000 bytes of text, quotes doubled,
 // counted in UTF-8, national text in its escapes and in UTF-16; 2000 bytes of
-// HEXTORAW)
-// is a PL/SQL block: the row is inserted with an empty LOB in each such column,
-// whose locators the INSERT returns, and each value is appended piece by piece,
-// a piece never splitting a character; the block ends with a line holding only /.
-// LOBs that fit stay literals of the INSERT.
+// HEXTORAW) is a PL/SQL block: the row is inserted with an empty LOB in each such
+// column, whose locators the INSERT returns, and each value is appended piece by
+// piece, a piece never splitting a character: a CLOB in string literals, an NCLOB
+// in base64 of its UTF-16 (1500 units a piece), a BLOB in base64 of its bytes
+// (3000 a piece); the block ends with a line holding only /. LOBs that fit stay
+// literals of the INSERT.
 func TestRowStatementsWriteLargeLobsAsBlocks(t *testing.T) {
 	session, mock := newMockSession(t)
 	expectDocsColumns(mock)
@@ -337,10 +343,9 @@ func TestRowStatementsWriteLargeLobsAsBlocks(t *testing.T) {
 		` RETURNING "BODY", "NBODY", "IMG" INTO l1, l2, l3;` + "\n" +
 		"  DBMS_LOB.APPEND(l1, TO_CLOB('" + x + "'));\n" +
 		"  DBMS_LOB.APPEND(l1, TO_CLOB('中" + y + "'));\n" +
-		"  DBMS_LOB.APPEND(l2, TO_NCLOB(UNISTR('" + n + "\\4E2D')));\n" +
-		"  DBMS_LOB.APPEND(l2, TO_NCLOB(N'''z'));\n" +
-		"  DBMS_LOB.WRITEAPPEND(l3, 2000, HEXTORAW('" + hex.EncodeToString(img[:2000]) + "'));\n" +
-		"  DBMS_LOB.WRITEAPPEND(l3, 50, HEXTORAW('" + hex.EncodeToString(img[2000:]) + "'));\n" +
+		"  DBMS_LOB.APPEND(l2, TO_NCLOB(UTL_I18N.RAW_TO_NCHAR(" + base64UTF16(n[:1500]) + ", 'AL16UTF16')));\n" +
+		"  DBMS_LOB.APPEND(l2, TO_NCLOB(UTL_I18N.RAW_TO_NCHAR(" + base64UTF16(n[1500:]+"中'z") + ", 'AL16UTF16')));\n" +
+		"  DBMS_LOB.WRITEAPPEND(l3, 2050, " + base64Bytes(img) + ");\n" +
 		"END;\n" +
 		"/",
 		`INSERT INTO "DOCS" ("ID", "BODY", "NBODY", "IMG", "NOTE") VALUES (2, 'small', NULL, HEXTORAW('` +
@@ -438,19 +443,100 @@ func TestGridEditStatementsWriteNationalTextAsUnicodeEscapes(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// An NCLOB too large for one literal is appended in TO_NCLOB(UNISTR(…)) pieces
-// sized for the escaped form: 400 emoji (4000 bytes of escapes) fill a piece,
-// and the next emoji starts the next one whole.
-func TestLargeNclobBlockAppendsUnistrPieces(t *testing.T) {
+// An NCLOB too large for one literal (its UNISTR escapes past 4000 bytes) is
+// appended in pieces of 1500 UTF-16 units, an emoji that would end a piece
+// starting the next one whole rather than splitting its surrogate pair.
+func TestLargeNclobBlockAppendsUTF16Pieces(t *testing.T) {
+	a := strings.Repeat("a", 1499)
 	statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
 		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals,
-		Columns: []sqldb.InsertColumn{{Name: "NBODY", Type: "NCLOB", Value: strings.Repeat("😀", 401) + "ï"}},
+		Columns: []sqldb.InsertColumn{{Name: "NBODY", Type: "NCLOB", Value: a + "😀ï" + strings.Repeat("😀", 400)}},
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "DECLARE\n  l1 NCLOB;\nBEGIN\n"+
 		`  INSERT INTO "DOCS" ("NBODY") VALUES (EMPTY_CLOB()) RETURNING "NBODY" INTO l1;`+"\n"+
-		"  DBMS_LOB.APPEND(l1, TO_NCLOB(UNISTR('"+strings.Repeat(`\D83D\DE00`, 400)+"')));\n"+
-		`  DBMS_LOB.APPEND(l1, TO_NCLOB(UNISTR('\D83D\DE00\00EF')));`+"\n"+
+		"  DBMS_LOB.APPEND(l1, TO_NCLOB(UTL_I18N.RAW_TO_NCHAR("+base64UTF16(a)+", 'AL16UTF16')));\n"+
+		"  DBMS_LOB.APPEND(l1, TO_NCLOB(UTL_I18N.RAW_TO_NCHAR("+base64UTF16("😀ï"+strings.Repeat("😀", 400))+", 'AL16UTF16')));\n"+
 		"END;\n/", statement)
+
+	// National text whose escapes fit one literal stays the INSERT's literal.
+	_, ok, err = dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"DOCS"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{{Name: "NBODY", Type: "NCLOB", Value: strings.Repeat("😀", 400)}},
+	})
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+// base64UTF16 is the PL/SQL raw of text's UTF-16 (big-endian) in base64.
+func base64UTF16(text string) string {
+	var raw []byte
+	for _, u := range utf16.Encode([]rune(text)) {
+		raw = append(raw, byte(u>>8), byte(u))
+	}
+	return base64Bytes(raw)
+}
+
+// base64Bytes is the PL/SQL raw of raw in base64.
+func base64Bytes(raw []byte) string {
+	return "UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('" + base64.StdEncoding.EncodeToString(raw) + "'))"
+}
+
+// A row whose appends take more than about 1 MiB is several blocks of about that
+// size, run one after another in one session, since running a statement takes
+// several times its size in the extension: the first inserts the row and keeps
+// its ROWID in CLIENT_INFO, each other locks the row by it and appends the next
+// pieces of one column, the last clears CLIENT_INFO. The pieces are the value.
+func TestLargeRowIsWrittenAsSeveralBlocks(t *testing.T) {
+	var body strings.Builder
+	for i := 0; body.Len() < 2_500_000; i++ {
+		fmt.Fprintf(&body, "line %d 'q' 中文\n", i)
+	}
+	img := make([]byte, 1_200_000)
+	for i := range img {
+		img[i] = byte(i * 7)
+	}
+	statement, ok, err := dialect{}.RowInsertStatement(sqldb.InsertRow{
+		TableRef: `"HR"."DOCS"`, Quote: quoteIdent, Literals: literals,
+		Columns: []sqldb.InsertColumn{
+			{Name: "ID", Type: "NUMBER", Value: "7"},
+			{Name: "BODY", Type: "CLOB", Value: body.String()},
+			{Name: "IMG", Type: "BLOB", Value: img},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	statements, err := splitOracle(context.Background(), statement)
+	require.NoError(t, err)
+	require.Len(t, statements, 1+3+2)
+	assert.Equal(t, "DECLARE\n  r UROWID;\nBEGIN\n"+
+		`  INSERT INTO "HR"."DOCS" ("ID", "BODY", "IMG") VALUES (7, EMPTY_CLOB(), EMPTY_BLOB()) RETURNING ROWID INTO r;`+"\n"+
+		"  DBMS_APPLICATION_INFO.SET_CLIENT_INFO(r);\nEND;", statements[0].Text)
+
+	clobPiece := regexp.MustCompile(`TO_CLOB\('((?:[^']|'')*)'\)`)
+	blobPiece := regexp.MustCompile(`WRITEAPPEND\(l, (\d+), UTL_ENCODE\.BASE64_DECODE\(UTL_RAW\.CAST_TO_RAW\('([^']*)'\)\)\)`)
+	var text strings.Builder
+	var data []byte
+	for i, st := range statements[1:] {
+		column, kind := `"BODY"`, "CLOB"
+		if i >= 3 {
+			column, kind = `"IMG"`, "BLOB"
+		}
+		assert.True(t, strings.HasPrefix(st.Text, "DECLARE\n  l "+kind+";\nBEGIN\n  SELECT "+column+` INTO l FROM "HR"."DOCS" `+
+			"WHERE ROWID = SYS_CONTEXT('USERENV', 'CLIENT_INFO') FOR UPDATE;\n"), st.Text[:200])
+		assert.Less(t, len(st.Text), (1<<20)+5000, "block %d", i)
+		assert.Equal(t, i == 4, strings.Contains(st.Text, "DBMS_APPLICATION_INFO.SET_CLIENT_INFO(NULL);"), "block %d", i)
+		for _, m := range clobPiece.FindAllStringSubmatch(st.Text, -1) {
+			text.WriteString(strings.ReplaceAll(m[1], "''", "'"))
+		}
+		for _, m := range blobPiece.FindAllStringSubmatch(st.Text, -1) {
+			raw, err := base64.StdEncoding.DecodeString(m[2])
+			require.NoError(t, err)
+			assert.Equal(t, m[1], strconv.Itoa(len(raw)))
+			data = append(data, raw...)
+		}
+	}
+	assert.Equal(t, body.String(), text.String())
+	assert.Equal(t, img, data)
 }

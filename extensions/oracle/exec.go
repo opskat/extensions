@@ -37,7 +37,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return c.queryRows(ctx, query, args)
 	}
 	if text, ok := strings.CutPrefix(query, tableMark); ok {
-		return c.queryTable(ctx, text)
+		return c.queryTable(ctx, text, false)
 	}
 	if text, ok := strings.CutPrefix(query, countMark); ok {
 		return c.queryCount(ctx, text)
@@ -50,7 +50,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, err
 	}
 	if len(stmts) == 1 && isTableRead(stmts[0].Text) {
-		return c.queryTable(ctx, stmts[0].Text)
+		return c.queryTable(ctx, stmts[0].Text, true)
 	}
 	last := len(stmts) - 1
 	for i := range last {
@@ -284,6 +284,14 @@ type rows struct {
 	// names replace the column names the database reports (nil keeps them): the
 	// table view's unaliased SELECT-list expressions (queryTable).
 	names []string
+	// hidden is how many columns the database reports after the names, which the
+	// rows do not show: a table read's guard columns (lobGuard), the first
+	// len(guards) of them, a value in one failing the row, then its fetch padding
+	// (fetchPadding).
+	hidden int
+	guards []lobGuard
+	// read is the buffer a row with hidden columns is read into.
+	read []driver.Value
 }
 
 func (r *rows) Columns() []string {
@@ -299,8 +307,23 @@ func (r *rows) Next(dest []driver.Value) error {
 	if r.left == 0 {
 		return io.EOF
 	}
-	if err := r.inner.Next(dest); err != nil {
+	values := dest
+	if r.hidden > 0 {
+		if r.read == nil {
+			r.read = make([]driver.Value, len(dest)+r.hidden)
+		}
+		values = r.read
+	}
+	if err := r.inner.Next(values); err != nil {
 		return err
+	}
+	for i, g := range r.guards {
+		if length := values[len(dest)+i]; length != nil {
+			return g.err(length)
+		}
+	}
+	if r.hidden > 0 {
+		copy(dest, values)
 	}
 	if r.left > 0 {
 		r.left--

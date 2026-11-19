@@ -86,8 +86,9 @@ func sameLobs(t *testing.T, admin *sql.DB, src, dst string) []string {
 // holds the same values: the statements spell each value with an explicit format
 // (the file also runs after the session's NLS formats and decimal separator are
 // changed), national text as UNISTR escapes, binary floats' special values as constants,
-// and the row with large LOBs as a PL/SQL block. The same block, copied as
-// INSERT and run as a statement, recreates the row.
+// and the row with large LOBs as a PL/SQL block (its national text and bytes in
+// base64). The same block, copied as INSERT and run as a statement, recreates the
+// row.
 func TestIntegrationDumpValuesRoundTrip(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
 		adminInfo := adminTarget(t, target)
@@ -111,8 +112,9 @@ func TestIntegrationDumpValuesRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		file := out.String()
 		for _, want := range []string{"TO_DATE('", "TO_TIMESTAMP('", "TO_TIMESTAMP_TZ('", "TO_DSINTERVAL('", "TO_YMINTERVAL('",
-			`UNISTR('\4E2D\6587`, "BINARY_FLOAT_NAN", "-BINARY_DOUBLE_INFINITY", "EMPTY_BLOB()", "DBMS_LOB.APPEND(l2, TO_NCLOB(UNISTR('",
-			"DBMS_LOB.WRITEAPPEND(l3, 2000, HEXTORAW('", "\nEND;\n/\n"} {
+			`UNISTR('\4E2D\6587`, "BINARY_FLOAT_NAN", "-BINARY_DOUBLE_INFINITY", "EMPTY_BLOB()",
+			"DBMS_LOB.APPEND(l2, TO_NCLOB(UTL_I18N.RAW_TO_NCHAR(UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('",
+			"DBMS_LOB.WRITEAPPEND(l3, 3000, UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('", "\nEND;\n/\n"} {
 			assert.Contains(t, file, want)
 		}
 
@@ -262,7 +264,7 @@ func TestIntegrationDumpNationalValuesRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		file := out.String()
 		for _, want := range []string{`UNISTR('\00EF\00F8\D83D\DE00\005C\4E2D`, `') || UNISTR('`,
-			"DBMS_LOB.APPEND(l1, TO_NCLOB(UNISTR('", `N'C:\path\''x'''`} {
+			"DBMS_LOB.APPEND(l1, TO_NCLOB(UTL_I18N.RAW_TO_NCHAR(UTL_ENCODE.BASE64_DECODE(", `N'C:\path\''x'''`} {
 			assert.Contains(t, file, want)
 		}
 		runOK(t, dst, dstName, file)

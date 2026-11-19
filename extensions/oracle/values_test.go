@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -301,4 +304,73 @@ func TestStarterAndFreeSQLAreNotRewritten(t *testing.T) {
 	_, err = s.Execute(context.Background(), query)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A table read reads a CLOB, NCLOB or BLOB value only when it is within 16 MB
+// (a character counting 2 bytes); a larger one is left unread, and its guard
+// column — not shown — fails the row with the table, the column and the size.
+func TestTableReadStopsBeforeALobOverTheLimit(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	expectTableColumns(mock, tableColumnTypes().
+		AddRow("ID", "NUMBER", nil).
+		AddRow("C", "CLOB", nil).
+		AddRow("NC", "NCLOB", nil).
+		AddRow("B", "BLOB", nil))
+	guarded := func(column string, limit int) (string, string) {
+		return fmt.Sprintf(`CASE WHEN DBMS_LOB.GETLENGTH("%[1]s") <= %[2]d THEN "%[1]s" END`, column, limit),
+			fmt.Sprintf(`CASE WHEN DBMS_LOB.GETLENGTH("%[1]s") > %[2]d THEN DBMS_LOB.GETLENGTH("%[1]s") END`, column, limit)
+	}
+	c, cGuard := guarded("C", 8388608)
+	nc, ncGuard := guarded("NC", 8388608)
+	b, bGuard := guarded("B", 16777216)
+	// The whole-table read sizes its fetches from its largest row first; rows of a
+	// few KB need no padding.
+	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH("C"), 0) * 3 + NVL(DBMS_LOB.GETLENGTH("NC"), 0) * 3 + ` +
+		`NVL(DBMS_LOB.GETLENGTH("B"), 0) * 1) FROM (SELECT "C", "NC", "B" FROM ` + emp + `)`).
+		WillReturnRows(sqlmock.NewRows([]string{"MAX"}).AddRow("1000"))
+	mock.ExpectQuery(`SELECT "ID", ` + c + `, ` + nc + `, ` + b + `, ` + cGuard + `, ` + ncGuard + `, ` + bGuard + ` FROM ` + emp).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", "C", "NC", "B", "GC", "GNC", "GB"}).
+			AddRow("1", "text", nil, []byte{0, 1}, nil, nil, nil).
+			AddRow("2", nil, nil, nil, nil, nil, "17825792"))
+
+	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	assert.Equal(t, []string{"ID", "C", "NC", "B"}, stream.Columns())
+	require.True(t, stream.Next(), "stream error: %v", stream.Err())
+	assert.Equal(t, []any{"1", "text", nil, "\x00\x01"}, stream.Row())
+	assert.False(t, stream.Next())
+	require.Error(t, stream.Err())
+	assert.Contains(t, stream.Err().Error(), `column "B" of table "HR"."EMP" holds a value of 17.0 MB (17825792 bytes)`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A CLOB or NCLOB is measured at 2 bytes per character.
+func TestLobGuardErrorMeasuresCharactersAtTwoBytes(t *testing.T) {
+	err := lobGuard{table: `"HR"."EMP"`, column: "NC", dataType: "NCLOB"}.err("8912896")
+	assert.Contains(t, err.Error(), `column "NC" of table "HR"."EMP" holds a value of 17.0 MB (8912896 characters)`)
+}
+
+// A whole-table read's padding brings go-ora's fetch (128 KiB / declared row size
+// + 1 rows, a LOB counting 2 bytes) down to about 8 MiB of LOB values, at least
+// one row; small rows keep go-ora's own fetch.
+func TestFetchPaddingBoundsGoOraFetches(t *testing.T) {
+	declared := regexp.MustCompile(`^CAST\(NULL AS VARCHAR2\((\d+) BYTE\)\)$`)
+	for _, rowBytes := range []int64{0, 100, 2000, 64 << 10, 256 << 10, 3 << 20, 16 << 20, 48 << 20} {
+		size := minLobRowSize
+		for _, column := range fetchPadding(rowBytes) {
+			m := declared.FindStringSubmatch(column)
+			require.NotNil(t, m, column)
+			n, err := strconv.Atoi(m[1])
+			require.NoError(t, err)
+			require.LessOrEqual(t, n, 4000)
+			size += n
+		}
+		rows := int64(0x20000/size + 1)
+		assert.True(t, rows == 1 || rows*rowBytes <= 8<<20, "row of %d bytes: %d rows a fetch", rowBytes, rows)
+		if rowBytes <= 1000 {
+			assert.Empty(t, fetchPadding(rowBytes), "row of %d bytes", rowBytes)
+		}
+	}
+	assert.Len(t, fetchPadding(16<<20), 33, "a 16 MB row is fetched alone")
 }

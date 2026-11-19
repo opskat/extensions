@@ -7,6 +7,7 @@ require (
 	github.com/opskat/opskat v1.15.1-0.20261119044209-3dfe0792e36b
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/stretchr/testify v1.12.1
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20261020153306-9f2b28d4331a
 )
 
@@ -18,6 +19,8 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
