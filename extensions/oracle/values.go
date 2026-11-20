@@ -136,7 +136,7 @@ var serializers = map[string]string{
 }
 
 // The largest LOB value a table read reads. Every value of a read is held whole
-// in the extension's memory (512 MiB, the module included) together with what is
+// in the extension's memory (1 GiB, the module included) together with what is
 // made of it — its JSON, a dump's statement of it (RowInsertStatement) — and
 // running out of it cannot be recovered from, so a larger value stops the read before it is read
 // (lobGuard). The size is the value's in Oracle: bytes for a BLOB, 2 bytes per

@@ -19,7 +19,7 @@ func init() {
 	if len(os.Args) == 0 {
 		os.Args = []string{"opskat"}
 	}
-	// The instance's memory is capped at 512 MiB (the host's instanceMemoryPages), the
+	// The instance's memory is capped at 1 GiB (the host's instanceMemoryPages), the
 	// module's 20 MiB included, never shrinks, and a large LOB value is held whole
 	// together with what is made of it (values.go, maxLobBytes; write.go): past a
 	// small part of it (64 MiB), collect as
