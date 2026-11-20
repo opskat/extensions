@@ -35,10 +35,12 @@ func TestListDatabasesListsSchemas(t *testing.T) {
 }
 
 // Tables of the schema, partitioned ones included (ALL_TABLES lists them), not the
-// recycle bin's and not a materialized view's container table (it is a view).
+// recycle bin's, not a materialized view's container table (it is a view) and not
+// an index-organized table's overflow segment or mapping table.
 func TestListTablesOfTheSchema(t *testing.T) {
 	session, mock := newMockSession(t)
 	mock.ExpectQuery(`FROM all_tables t WHERE t\.owner = NVL\(:1, SYS_CONTEXT\('USERENV', 'CURRENT_SCHEMA'\)\) AND t\.dropped = 'NO' ` +
+		`AND \(t\.iot_type IS NULL OR t\.iot_type = 'IOT'\) ` +
 		`AND NOT EXISTS \(SELECT 1 FROM all_mviews m WHERE m\.owner = t\.owner AND m\.mview_name = t\.table_name\) ORDER BY t\.table_name`).
 		WithArgs("HR").
 		WillReturnRows(names("TABLE_NAME", "DEPT", "EMP", "Mixed"))

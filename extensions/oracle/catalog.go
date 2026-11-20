@@ -35,10 +35,13 @@ func (dialect) ListDatabases(ctx context.Context, conn *sql.Conn) ([]string, err
 
 // ListTables lists the schema's tables, partitioned ones included. Tables in the
 // recycle bin are left out, and so is a materialized view's container table: the
-// materialized view is listed with the views.
+// materialized view is listed with the views. An index-organized table's overflow
+// segment and mapping table are internal to it and left out too: its DDL carries
+// both.
 func (dialect) ListTables(ctx context.Context, conn *sql.Conn, database string) ([]string, error) {
 	return sqldb.QueryNames(ctx, conn,
 		"SELECT t.table_name FROM all_tables t WHERE t.owner = "+ownerIs+" AND t.dropped = 'NO' "+
+			"AND (t.iot_type IS NULL OR t.iot_type = 'IOT') "+
 			"AND NOT EXISTS (SELECT 1 FROM all_mviews m WHERE m.owner = t.owner AND m.mview_name = t.table_name) "+
 			"ORDER BY t.table_name", database)
 }
