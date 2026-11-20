@@ -24,8 +24,8 @@ import (
 // and the last is run the way the session asked, so a query's result is the last
 // statement's.
 //
-// A table's own reads (the table view's pages, an export) are resolved with the
-// table's columns known (values.go).
+// A table's own reads (the table view's pages, an export, a dump) are resolved
+// with the table's columns known (values.go).
 //
 // The query panel's paging is done here too: the dialect only marks the text
 // (markCount / markPage), and the connection counts it, or runs it as written and
@@ -37,7 +37,10 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return c.queryRows(ctx, query, args)
 	}
 	if text, ok := strings.CutPrefix(query, tableMark); ok {
-		return c.queryTable(ctx, text, false)
+		return c.queryTable(ctx, text, readPage)
+	}
+	if text, ok := strings.CutPrefix(query, dumpMark); ok {
+		return c.queryTable(ctx, text, readDump)
 	}
 	if text, ok := strings.CutPrefix(query, countMark); ok {
 		return c.queryCount(ctx, text)
@@ -50,7 +53,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, err
 	}
 	if len(stmts) == 1 && isTableRead(stmts[0].Text) {
-		return c.queryTable(ctx, stmts[0].Text, true)
+		return c.queryTable(ctx, stmts[0].Text, readWhole)
 	}
 	last := len(stmts) - 1
 	for i := range last {

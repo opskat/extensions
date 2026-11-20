@@ -3,11 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -304,374 +301,6 @@ func (dialect) InsertRowKey(ctx context.Context, conn *sql.Conn, database, table
 	return key, nil
 }
 
-// RowInsertStatement writes a row whose CLOB, NCLOB or BLOB value does not fit
-// one literal as a PL/SQL block: the INSERT gives each such column an empty LOB
-// and returns its locator, and the value is appended piece by piece. The text of
-// an XMLType, JSON or VECTOR value that does not fit one literal (a
-// 1536-dimension vector does not) is built the same way in a temporary CLOB
-// before the INSERT, which gives it to the column — XMLType through its
-// constructor, which PL/SQL needs, the others converting it as they convert a
-// literal — and frees it then. The block ends with a line holding only /. Every
-// other row is the shared INSERT (ok false).
-//
-// A CLOB's piece is its string literal (TO_CLOB('…')). An NCLOB's and a BLOB's
-// piece is base64 (UTL_ENCODE.BASE64_DECODE), of the bytes or of the text in
-// UTF-16 (UTL_I18N.RAW_TO_NCHAR from AL16UTF16): like UNISTR it does not pass
-// through the database character set, and it takes 4 bytes per 3 where HEXTORAW
-// takes 2 per byte and UNISTR's escapes 5 per character outside ASCII. Each
-// piece's literal stays within 4000 bytes, so a line of the file stays within
-// SQL*Plus's 4999.
-//
-// Where the statement runs, go-ora holds its whole text several times over (as
-// runes among them, 4 bytes a character), so a row whose appends take more than
-// about 1 MB (blockPieces) is several blocks when the statement writes every
-// column of row.Key (the primary key or a unique key of NOT NULL columns,
-// InsertRowKey) with a value: the first inserts the row and appends its first
-// pieces, each further block finds the row by its key — the key's literals are
-// the INSERT's, so it compares each key column with what the INSERT stored — with
-// SELECT … FOR UPDATE, which locks the row so that its LOBs can be written, and
-// appends the next pieces to the LOBs it names. Without such a key the row stays
-// one block, which depends on nothing another statement left in the session:
-// one of more than maxBlockBytes is refused before any of it is written.
-//
-// A value may take 16 MB (maxLobBytes) and its appends more, all in the
-// extension's memory together with the request and the reply, so they are
-// written into one buffer sized for them up front, each piece encoded as it is
-// written: no copy of the value and no list of its literals.
-func (dialect) RowInsertStatement(row sqldb.InsertRow) (string, bool, error) {
-	large := make([]*largeLob, len(row.Columns))
-	builtSize, appendSize, pieces := 0, 0, 0
-	for i, column := range row.Columns {
-		lob, ok := splitLob(column)
-		if !ok {
-			continue
-		}
-		large[i] = &lob
-		if lob.built != "" {
-			builtSize += lob.size
-			continue
-		}
-		appendSize += lob.size
-		pieces += len(lob.pieces)
-	}
-	if builtSize+appendSize == 0 {
-		return "", false, nil
-	}
-	var declare, free strings.Builder
-	names := make([]string, len(row.Columns))
-	values := make([]string, len(row.Columns))
-	variables := make([]string, len(row.Columns))
-	var returning, into []string
-	n := 0
-	for i, column := range row.Columns {
-		names[i] = row.Quote(column.Name)
-		lob := large[i]
-		if lob == nil {
-			value, err := row.Literals.Literal(column.Value, column.Type)
-			if err != nil {
-				return "", false, err
-			}
-			values[i] = value
-			continue
-		}
-		n++
-		variables[i] = fmt.Sprintf("l%d", n)
-		fmt.Fprintf(&declare, "  %s %s;\n", variables[i], lob.kind)
-		if lob.built != "" {
-			values[i] = fmt.Sprintf(lob.built, variables[i])
-			fmt.Fprintf(&free, "  DBMS_LOB.FREETEMPORARY(%s);\n", variables[i])
-			continue
-		}
-		values[i] = lob.empty
-		returning, into = append(returning, names[i]), append(into, variables[i])
-	}
-	modifier := ""
-	if row.Modifier != "" {
-		modifier = " " + row.Modifier
-	}
-	insert := fmt.Sprintf("  INSERT INTO %s (%s)%s VALUES (%s)", row.TableRef,
-		strings.Join(names, ", "), modifier, strings.Join(values, ", "))
-	if len(into) > 0 {
-		insert += fmt.Sprintf(" RETURNING %s INTO %s", strings.Join(returning, ", "), strings.Join(into, ", "))
-	}
-	insert += ";\n" + free.String()
-
-	where, keyed := "", false
-	if pieces > blockPieces {
-		var err error
-		if where, keyed, err = keyCondition(row); err != nil {
-			return "", false, err
-		}
-	}
-	const end = "END;\n/"
-	header := len("DECLARE\n") + declare.Len() + len("BEGIN\n")
-	first, rest := header+builtSize+len(insert)+appendSize+len(end), 0
-	// selectAll finds the row and locks it, naming every LOB a further block may append to.
-	selectAll := ""
-	if keyed {
-		first = header + builtSize + len(insert) + blockPieces*(maxTextLiteral+pieceCall) + len(end)
-		selectAll = fmt.Sprintf("  SELECT %s INTO %s FROM %s WHERE %s FOR UPDATE;\n",
-			strings.Join(returning, ", "), strings.Join(into, ", "), row.TableRef, where)
-		rest = appendSize + (pieces/blockPieces)*(1+header+len(selectAll)+len(end))
-	}
-	if first > maxBlockBytes {
-		// Appends of more than a block's that the key does not split make it too
-		// large; otherwise the text built before the INSERT does.
-		return "", false, blockTooLarge(row, first, keyed || pieces <= blockPieces)
-	}
-
-	var b strings.Builder
-	b.Grow(first + rest)
-	b.WriteString("DECLARE\n" + declare.String() + "BEGIN\n")
-	for i, lob := range large {
-		if lob == nil || lob.built == "" {
-			continue
-		}
-		b.WriteString("  DBMS_LOB.CREATETEMPORARY(" + variables[i] + ", TRUE);\n")
-		for _, piece := range lob.pieces {
-			if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
-				return "", false, err
-			}
-		}
-	}
-	b.WriteString(insert)
-	// The appends, column by column and piece by piece. With a key a further
-	// block starts every blockPieces pieces, declaring and selecting the LOBs
-	// those pieces go to: the ones whose pieces (from offsets[j] on) meet them.
-	offsets, total := make([]int, len(large)), 0
-	for i, lob := range large {
-		if lob != nil && lob.built == "" {
-			offsets[i], total = total, total+len(lob.pieces)
-		}
-	}
-	written := 0
-	for i, lob := range large {
-		if lob == nil || lob.built != "" {
-			continue
-		}
-		for _, piece := range lob.pieces {
-			if keyed && written > 0 && written%blockPieces == 0 {
-				var lobs, vars []string
-				var declared strings.Builder
-				for j, other := range large {
-					if other == nil || other.built != "" || offsets[j] >= written+blockPieces || offsets[j]+len(other.pieces) <= written {
-						continue
-					}
-					lobs, vars = append(lobs, names[j]), append(vars, variables[j])
-					fmt.Fprintf(&declared, "  %s %s;\n", variables[j], other.kind)
-				}
-				fmt.Fprintf(&b, "%s\nDECLARE\n%sBEGIN\n  SELECT %s INTO %s FROM %s WHERE %s FOR UPDATE;\n", end,
-					declared.String(), strings.Join(lobs, ", "), strings.Join(vars, ", "), row.TableRef, where)
-			}
-			if err := lob.write(&b, variables[i], piece, row.Literals); err != nil {
-				return "", false, err
-			}
-			written++
-		}
-	}
-	b.WriteString(end)
-	return b.String(), true, nil
-}
-
-// keyCondition is the condition that finds the row by row.Key, each column
-// compared with the literal the INSERT writes for it; ok false when there is no
-// key or the statement does not write every key column with a value.
-func keyCondition(row sqldb.InsertRow) (string, bool, error) {
-	if len(row.Key) == 0 {
-		return "", false, nil
-	}
-	conditions := make([]string, len(row.Key))
-	for i, name := range row.Key {
-		j := slices.IndexFunc(row.Columns, func(c sqldb.InsertColumn) bool { return c.Name == name })
-		if j < 0 || row.Columns[j].Value == nil {
-			return "", false, nil
-		}
-		literal, err := row.Literals.Literal(row.Columns[j].Value, row.Columns[j].Type)
-		if err != nil {
-			return "", false, err
-		}
-		conditions[i] = row.Quote(name) + " = " + literal
-	}
-	return strings.Join(conditions, " AND "), true, nil
-}
-
-// blockTooLarge is the error for a row whose (first) block would take size bytes,
-// more than maxBlockBytes: because of the text built before the INSERT (built),
-// or because the row cannot be found by a key to append the rest in further blocks.
-func blockTooLarge(row sqldb.InsertRow, size int, built bool) error {
-	reason := "the table has neither a primary key nor a unique key of NOT NULL columns by which further blocks could find the row"
-	switch {
-	case built:
-		reason = "the text of its XMLType, JSON or VECTOR values is built within the first block"
-	case len(row.Key) > 0:
-		quoted := make([]string, len(row.Key))
-		for i, name := range row.Key {
-			quoted[i] = row.Quote(name)
-		}
-		reason = "the statement does not write the columns that find the row (" + strings.Join(quoted, ", ") + ") with values"
-	}
-	return fmt.Errorf("oracle: a row of table %s would be a PL/SQL block of about %.1f MB (%d bytes) of SQL text, "+
-		"more than the %d MB (%d bytes) one block may take: %s",
-		row.TableRef, float64(size)/(1<<20), size, maxBlockBytes>>20, maxBlockBytes, reason)
-}
-
-// blockPieces is the most pieces one block appends when a row is several blocks:
-// about 1 MB of appends (blockAppendBytes), a piece's append taking at most its
-// literal or base64 of maxTextLiteral bytes and pieceCall. maxBlockBytes is the
-// most SQL text a row's one block may take: a 16 MB BLOB's block (about 23 MB)
-// runs within the extension's memory, a 50 MB one exhausts it.
-const (
-	blockAppendBytes = 1 << 20
-	blockPieces      = blockAppendBytes / (maxTextLiteral + pieceCall)
-	maxBlockBytes    = 24 << 20
-)
-
-// largeLob is a LOB value that does not fit one literal: the PL/SQL type of its
-// locator, the empty LOB the INSERT writes, its pieces (parts of the value, not
-// copies: strings of a text, []byte or strings of bytes) and about how many bytes
-// their appends take. built is set instead of empty for the text of a type that
-// is not a LOB, built in a temporary CLOB: the INSERT's value, given the variable.
-type largeLob struct {
-	kind, empty, built string
-	pieces             []any
-	size               int
-}
-
-// builtValues is how the INSERT gives each type whose text is built in a
-// temporary CLOB (largeLob.built) its variable.
-var builtValues = map[string]string{"XMLTYPE": "XMLTYPE(%s)", "JSON": "%s", "VECTOR": "%s"}
-
-// pieceCall is the most an append takes besides its piece's literal or base64.
-const pieceCall = 128
-
-// maxBase64Piece is the bytes one base64 literal of 4000 characters holds.
-const maxBase64Piece = maxTextLiteral / 4 * 3
-
-// write writes the append of one piece to the LOB in variable.
-func (lob *largeLob) write(b *strings.Builder, variable string, piece any, literals sqldb.Literals) error {
-	switch lob.kind {
-	case "CLOB":
-		literal, err := literals.Literal(piece, "CLOB")
-		if err != nil {
-			return err
-		}
-		b.WriteString("  DBMS_LOB.APPEND(" + variable + ", TO_CLOB(" + literal + "));\n")
-	case "NCLOB":
-		text := piece.(string)
-		units := utf16.Encode([]rune(text))
-		raw := make([]byte, 2*len(units))
-		for i, u := range units {
-			binary.BigEndian.PutUint16(raw[2*i:], u)
-		}
-		b.WriteString("  DBMS_LOB.APPEND(" + variable + ", TO_NCLOB(UTL_I18N.RAW_TO_NCHAR(" + base64Raw(raw) + ", 'AL16UTF16')));\n")
-	default:
-		var raw []byte
-		switch v := piece.(type) {
-		case []byte:
-			raw = v
-		case string:
-			raw = []byte(v)
-		}
-		b.WriteString("  DBMS_LOB.WRITEAPPEND(" + variable + ", " + strconv.Itoa(len(raw)) + ", " + base64Raw(raw) + ");\n")
-	}
-	return nil
-}
-
-// base64Raw is the PL/SQL expression of raw: its base64 decoded.
-func base64Raw(raw []byte) string {
-	return "UTL_ENCODE.BASE64_DECODE(UTL_RAW.CAST_TO_RAW('" + base64.StdEncoding.EncodeToString(raw) + "'))"
-}
-
-// splitLob reports whether column holds a CLOB, NCLOB or BLOB value, or the text
-// of an XMLType, JSON or VECTOR value (builtValues), too large for one literal,
-// and splits it into pieces that each fit one: a CLOB's or that text's string
-// literal (textPieces), an NCLOB's UTF-16 or a BLOB's bytes in base64
-// (maxBase64Piece bytes, a surrogate pair never split).
-func splitLob(column sqldb.InsertColumn) (largeLob, bool) {
-	kind := typeName(column.Type)
-	if built, ok := builtValues[kind]; ok {
-		text, ok := column.Value.(string)
-		if !ok {
-			return largeLob{}, false
-		}
-		lob, ok := clobPieces(text)
-		lob.built = built
-		return lob, ok
-	}
-	switch kind {
-	case "CLOB", "NCLOB":
-		var text string
-		switch v := column.Value.(type) {
-		case string:
-			text = v
-		case []byte:
-			text = string(v)
-		default:
-			return largeLob{}, false
-		}
-		if kind == "CLOB" {
-			lob, ok := clobPieces(text)
-			lob.empty = "EMPTY_CLOB()"
-			return lob, ok
-		}
-		lob := largeLob{kind: kind, empty: "EMPTY_CLOB()"}
-		if fitsNationalLiteral(text) {
-			return largeLob{}, false
-		}
-		start, units := 0, 0
-		for i, r := range text {
-			n := utf16.RuneLen(r)
-			if units+n > maxBase64Piece/2 {
-				lob.pieces = append(lob.pieces, text[start:i])
-				start, units = i, 0
-			}
-			units += n
-			lob.size += 2 * n
-		}
-		lob.pieces = append(lob.pieces, text[start:])
-		lob.size = lob.size*4/3 + len(lob.pieces)*pieceCall
-		return lob, true
-	case "BLOB":
-		// A dump's value is bytes, the grid's the string of them; a piece is a
-		// part of either, never a copy.
-		var n int
-		var piece func(start, end int) any
-		switch v := column.Value.(type) {
-		case []byte:
-			n, piece = len(v), func(start, end int) any { return v[start:end] }
-		case string:
-			n, piece = len(v), func(start, end int) any { return v[start:end] }
-		default:
-			return largeLob{}, false
-		}
-		if n <= maxRawLiteral {
-			return largeLob{}, false
-		}
-		lob := largeLob{kind: kind, empty: "EMPTY_BLOB()"}
-		for start := 0; start < n; start += maxBase64Piece {
-			end := min(start+maxBase64Piece, n)
-			lob.pieces = append(lob.pieces, piece(start, end))
-		}
-		lob.size = n*4/3 + len(lob.pieces)*pieceCall
-		return lob, true
-	}
-	return largeLob{}, false
-}
-
-// clobPieces splits text that does not fit one string literal into a CLOB's
-// pieces (textPieces).
-func clobPieces(text string) (largeLob, bool) {
-	pieces, size := textPieces(text)
-	if len(pieces) < 2 {
-		return largeLob{}, false
-	}
-	lob := largeLob{kind: "CLOB", pieces: make([]any, len(pieces)), size: size + len(pieces)*pieceCall}
-	for i, piece := range pieces {
-		lob.pieces[i] = piece
-	}
-	return lob, true
-}
-
 // fitsNationalLiteral reports whether national text is one literal of its own:
 // N'…' or UNISTR of its escapes within maxTextLiteral (nationalPieces).
 func fitsNationalLiteral(text string) bool {
@@ -679,17 +308,14 @@ func fitsNationalLiteral(text string) bool {
 	return len(pieces) < 2
 }
 
-// textPieces splits text into pieces whose string literals fit maxTextLiteral,
-// never inside a character. The size is the literal's, quotes doubled, in UTF-8:
-// the size in an AL32UTF8 database, and more than in a GBK one (two bytes for a
-// Chinese character).
-func textPieces(text string) ([]string, int) {
-	return literalPieces(text, func(r rune) (int, int) {
-		if r == '\'' {
-			return 2, 0
-		}
-		return utf8.RuneLen(r), 0
-	})
+// textLiteralSize is a character's size in a string literal, quotes doubled, in
+// UTF-8: the size in an AL32UTF8 database, and more than in a GBK one (two bytes
+// for a Chinese character).
+func textLiteralSize(r rune) (int, int) {
+	if r == '\'' {
+		return 2, 0
+	}
+	return utf8.RuneLen(r), 0
 }
 
 // nationalPieces splits national text into pieces whose literals fit
@@ -714,20 +340,16 @@ func nationalPieces(text string) ([]string, int) {
 }
 
 // literalPieces splits text before each character that would take a piece past
-// maxTextLiteral in either of the two sizes size gives a character, and returns
-// the pieces' total in the first size.
+// maxTextLiteral in either of the two sizes size gives a character
+// (pieceSplitter), and returns the pieces' total in the first size.
 func literalPieces(text string, size func(r rune) (int, int)) ([]string, int) {
-	var pieces []string
-	start, total1, total2, total := 0, 0, 0, 0
-	for i, r := range text {
-		n1, n2 := size(r)
-		if total1+n1 > maxTextLiteral || total2+n2 > maxTextLiteral {
-			pieces = append(pieces, text[start:i])
-			start, total1, total2 = i, 0, 0
-		}
-		total1, total2, total = total1+n1, total2+n2, total+n1
+	split := pieceSplitter{size: size, limit: maxTextLiteral}
+	pieces := split.end(split.text(text, nil))
+	out, total := make([]string, len(pieces)), 0
+	for i, piece := range pieces {
+		out[i], total = piece.value.(string), total+piece.measure
 	}
-	return append(pieces, text[start:]), total
+	return out, total
 }
 
 func (dialect) UpdateRowSQL(tableRef, set, where string) string {

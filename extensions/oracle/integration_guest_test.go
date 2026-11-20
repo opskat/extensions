@@ -33,7 +33,9 @@ import (
 // module; wasmSession does what it does for a dump, a SQL file run, an export
 // and a copy: one call per operation, a cursor read page by page on the
 // instance it was opened on, row statements in parts of about
-// extwire.DriverRowsBytes, the bytes of a binary value named in both directions.
+// extwire.DriverRowsBytes, the bytes of a binary value named in both directions,
+// and a dump's table data written by the guest page by page when its session says
+// it can (extwire.DriverOpened.TableStatements).
 // The sizes and the bytes' encoding are the host's own (extwire.DriverStreamRows,
 // RowParts, RowBytesOf, DriverStreamPage.RestoreBytes), so they cannot drift.
 
@@ -178,6 +180,10 @@ type wasmSession struct {
 	open   dbdriver.OpenRequest
 	scope  *extension.Scope
 
+	// tableStatements is what the first login answered for
+	// extwire.DriverOpened.TableStatements.
+	tableStatements bool
+
 	mu   sync.Mutex
 	idle []*wasmInstance
 	all  []*wasmInstance
@@ -227,6 +233,9 @@ func (s *wasmSession) acquire(ctx context.Context) (*wasmInstance, error) {
 	}
 	inst.session = opened.Session
 	s.mu.Lock()
+	if len(s.all) == 0 {
+		s.tableStatements = opened.TableStatements
+	}
 	s.all = append(s.all, inst)
 	s.mu.Unlock()
 	return inst, nil
@@ -357,9 +366,65 @@ func (s *wasmSession) DumpObject(ctx context.Context, object dbdriver.DumpObject
 	return out, s.do(ctx, extwire.DriverOpDumpObject, extwire.DriverArgs{}, object, &out)
 }
 
-// dump writes the dump of req as the app's Dump SQL File does.
+// dump writes the dump of req as the app's Dump SQL File does: a table's data
+// written by the guest when its session says it can.
 func (s *wasmSession) dump(ctx context.Context, req dbdriver.DumpRequest) (*dbdriver.DumpResult, error) {
-	return dbdriver.Dump(ctx, req, s, s)
+	var source dbdriver.DumpSource = s
+	if s.tableStatements {
+		source = guestStatements{s}
+	}
+	return dbdriver.Dump(ctx, req, source, s)
+}
+
+// guestStatements is a session whose guest writes a dump's table data itself
+// (dbdriver.TableStatementSource): the stream is opened on an instance it holds
+// until it is closed, and read a page per call.
+type guestStatements struct{ *wasmSession }
+
+func (s guestStatements) TableStatements(ctx context.Context, database, table string, req dbdriver.TableStatementsRequest) (dbdriver.TableStatementPages, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	inst, err := s.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var opened extwire.DriverStreamOpened
+	err = inst.call(ctx, extwire.DriverCall{Op: extwire.DriverOpTableStatements, Session: inst.session, Args: extwire.DriverArgs{
+		Database: database, Table: table, Request: raw,
+	}}, &opened)
+	if err != nil {
+		s.release(inst)
+		return nil, err
+	}
+	return &wasmStatementPages{ctx: ctx, session: s.wasmSession, inst: inst, id: opened.Stream}, nil
+}
+
+type wasmStatementPages struct {
+	ctx     context.Context
+	session *wasmSession
+	inst    *wasmInstance
+	id      uint64
+	closed  bool
+}
+
+func (p *wasmStatementPages) Next() (*dbdriver.TableStatementPage, error) {
+	var page dbdriver.TableStatementPage
+	err := p.inst.call(p.ctx, extwire.DriverCall{Op: extwire.DriverOpStatementsNext, Args: extwire.DriverArgs{Stream: p.id}}, &page)
+	return &page, err
+}
+
+func (p *wasmStatementPages) Close() error {
+	if p.closed {
+		return nil
+	}
+	p.closed = true
+	defer p.session.release(p.inst)
+	if p.inst.broken != nil {
+		return nil
+	}
+	return p.inst.call(p.ctx, extwire.DriverCall{Op: extwire.DriverOpStreamClose, Args: extwire.DriverArgs{Stream: p.id}}, nil)
 }
 
 // runScript runs a SQL file as the app's Run SQL File does.

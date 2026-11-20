@@ -68,6 +68,15 @@ const (
 	limitBytes = 16 << 20 // the limit, as maxLobBytes
 	overBytes  = 17 << 20
 	rowBytes   = 256 << 10
+	big2Bytes  = 2 << 20
+)
+
+// A dump of a row of large values holds about a block of each at a time (spec
+// decision 14): the instance's peak memory stays within maxDumpPeakMiB for three
+// values at the limit and grows by at most dumpPeakGrowthMiB from three of 2 MB.
+const (
+	maxDumpPeakMiB    = 160
+	dumpPeakGrowthMiB = 32
 )
 
 var lobFixture = []string{
@@ -78,8 +87,11 @@ var lobFixture = []string{
 	"CREATE TABLE OVER_B (ID NUMBER PRIMARY KEY, B BLOB)",
 	"CREATE TABLE ROWS256 (ID NUMBER PRIMARY KEY, B BLOB)",
 	"CREATE TABLE OVER_X (ID NUMBER PRIMARY KEY, X XMLTYPE)",
-	// A row of three values at the limit, in a table with a primary key.
+	// A row of three values at the limit, in a table with a primary key, and one
+	// of three values of 2 MB.
 	"CREATE TABLE BIG16 (ID NUMBER PRIMARY KEY, C CLOB, NC NCLOB, B BLOB)",
+	"CREATE TABLE BIG2 (ID NUMBER PRIMARY KEY, C CLOB, NC NCLOB, B BLOB)",
+	"CREATE TABLE BIG2_B (ID NUMBER PRIMARY KEY, B BLOB)",
 	// No key that finds a row: a unique key with a nullable column does not.
 	"CREATE TABLE NOKEY_B (ID NUMBER UNIQUE, B BLOB)",
 	"CREATE TABLE NOKEY_OVER (ID NUMBER, B BLOB, B2 BLOB)",
@@ -95,6 +107,10 @@ var lobFixture = []string{
 	blobFill("OVER_B", 1, overBytes),
 	blobFill("ROWS256", 500, rowBytes),
 	"INSERT INTO BIG16 SELECT 1, (SELECT C FROM LOB_C), (SELECT NC FROM LOB_NC), (SELECT B FROM LOB_B) FROM dual",
+	blobFill("BIG2_B", 1, big2Bytes),
+	fmt.Sprintf("INSERT INTO BIG2 SELECT 1, SUBSTR((SELECT C FROM LOB_C), 1, %[1]d), SUBSTR((SELECT NC FROM LOB_NC), 1, %[1]d), "+
+		"(SELECT B FROM BIG2_B) FROM dual", big2Bytes/2),
+	"DROP TABLE BIG2_B",
 	"INSERT INTO NOKEY_B SELECT 1, B FROM LOB_B",
 	"INSERT INTO NOKEY_OVER SELECT 1, B, B FROM LOB_B",
 	// 2 MB: two blocks' appends and more.
@@ -241,36 +257,52 @@ func TestIntegrationLargeLobs(t *testing.T) {
 			})
 		}
 
-		// A row of three values at the limit (about 62 MB of appends) is blocks of
-		// about 1 MB, the later ones finding the row by its primary key: the run
-		// reports progress as it goes and holds no more than a block of it at a time.
-		t.Run("16 MB CLOB, NCLOB and BLOB in one row", func(t *testing.T) {
-			d := load(t)
-			src, dst := d.open(t, srcUser, srcName), d.open(t, dstUser, dstName)
-			file := filepath.Join(t.TempDir(), "big16.sql")
-			start := time.Now()
-			dumpToFile(t, src, dbdriver.DumpRequest{Database: srcName, Tables: []string{"BIG16"}, WithData: true}, file)
-			dumped, dumpPeak := time.Since(start), d.memory.MiB()
-			blocks, largest := blockSizes(t, file)
-			assert.Greater(t, blocks, 50)
-			assert.Less(t, largest, 2<<20)
-			dump, err := os.ReadFile(file)
-			require.NoError(t, err)
-			assert.Contains(t, string(dump), `  SELECT "C" INTO l1 FROM "BIG16" WHERE "ID" = 1 FOR UPDATE;`)
-			size := len(dump)
+		// A row of three values of 2 MB and one of three at the limit (about 62 MB
+		// of appends) are blocks of about 1 MB, the later ones finding the row by its
+		// primary key: the dump reads the values in pieces as it writes the blocks,
+		// so its memory hardly depends on their size, and the run reports progress
+		// as it goes and holds no more than a block of it at a time.
+		var big2Peak float64
+		for _, tc := range []struct {
+			name, table string
+			minBlocks   int
+		}{{"2 MB", "BIG2", 6}, {"16 MB", "BIG16", 50}} {
+			t.Run(tc.name+" CLOB, NCLOB and BLOB in one row", func(t *testing.T) {
+				d := load(t)
+				src, dst := d.open(t, srcUser, srcName), d.open(t, dstUser, dstName)
+				file := filepath.Join(t.TempDir(), tc.table+".sql")
+				start := time.Now()
+				dumpToFile(t, src, dbdriver.DumpRequest{Database: srcName, Tables: []string{tc.table}, WithData: true}, file)
+				dumped, dumpPeak := time.Since(start), d.memory.MiB()
+				blocks, largest := blockSizes(t, file)
+				assert.Greater(t, blocks, tc.minBlocks)
+				assert.Less(t, largest, 2<<20)
+				dump, err := os.ReadFile(file)
+				require.NoError(t, err)
+				assert.Contains(t, string(dump), `  SELECT "C" INTO l1 FROM "`+tc.table+`" WHERE "ID" = 1 FOR UPDATE;`)
+				size := len(dump)
 
-			ran, runPeak, progress, gap := runFile(t, dst, dstName, file)
-			assert.GreaterOrEqual(t, progress, blocks/2)
-			assert.Equal(t, []string{"0|0|0"}, textRows(t, admin, fmt.Sprintf(
-				"SELECT DBMS_LOB.COMPARE(s.C, d.C), DBMS_LOB.COMPARE(s.NC, d.NC), DBMS_LOB.COMPARE(s.B, d.B) "+
-					"FROM %s.BIG16 s JOIN %s.BIG16 d ON d.ID = s.ID", quoteIdent(srcName), quoteIdent(dstName))))
-			require.NoError(t, src.healthy(lobContext(t)))
-			require.NoError(t, dst.healthy(lobContext(t)))
-			t.Logf("BIG16: dump %s (%.1f MB file, %d blocks, largest %.2f MB), run %s with %d progress reports, longest gap %s; "+
-				"peak guest memory after the dump %.1f MiB, after the run %.1f MiB",
-				dumped.Round(time.Second), float64(size)/1e6, blocks, float64(largest)/1e6, ran.Round(time.Second), progress,
-				gap.Round(time.Millisecond), dumpPeak, runPeak)
-		})
+				ran, runPeak, progress, gap := runFile(t, dst, dstName, file)
+				assert.GreaterOrEqual(t, progress, blocks/2)
+				assert.Equal(t, []string{"0|0|0"}, textRows(t, admin, fmt.Sprintf(
+					"SELECT DBMS_LOB.COMPARE(s.C, d.C), DBMS_LOB.COMPARE(s.NC, d.NC), DBMS_LOB.COMPARE(s.B, d.B) "+
+						"FROM %[1]s.%[3]s s JOIN %[2]s.%[3]s d ON d.ID = s.ID", quoteIdent(srcName), quoteIdent(dstName), tc.table)))
+				require.NoError(t, src.healthy(lobContext(t)))
+				require.NoError(t, dst.healthy(lobContext(t)))
+				t.Logf("%s: dump %s (%.1f MB file, %d blocks, largest %.2f MB), run %s with %d progress reports, longest gap %s; "+
+					"peak guest memory after the dump %.1f MiB, after the run %.1f MiB",
+					tc.table, dumped.Round(time.Second), float64(size)/1e6, blocks, float64(largest)/1e6, ran.Round(time.Second), progress,
+					gap.Round(time.Millisecond), dumpPeak, runPeak)
+				assert.LessOrEqual(t, dumpPeak, float64(maxDumpPeakMiB), "%s dump peak", tc.table)
+				if tc.table == "BIG2" {
+					big2Peak = dumpPeak
+					return
+				}
+				require.NotZero(t, big2Peak, "the 2 MB row's dump ran first")
+				assert.LessOrEqual(t, dumpPeak-big2Peak, float64(dumpPeakGrowthMiB), "BIG16 %.1f MiB, BIG2 %.1f MiB", dumpPeak, big2Peak)
+				t.Logf("dump peak: BIG16 %.1f MiB, BIG2 %.1f MiB, difference %.1f MiB", dumpPeak, big2Peak, dumpPeak-big2Peak)
+			})
+		}
 
 		// A unique key of NOT NULL columns finds the row when there is no primary
 		// key; its RAW, national and DATE values are the INSERT's literals.

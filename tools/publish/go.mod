@@ -3,7 +3,7 @@ module github.com/opskat/extensions/tools/publish
 go 1.26.0
 
 require (
-	github.com/opskat/opskat v1.15.1-0.20261120014742-3da1dc402279
+	github.com/opskat/opskat v1.15.1-0.20261120041548-2de9dad34df4
 	go.uber.org/zap v1.28.0
 )
 
