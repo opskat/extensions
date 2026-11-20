@@ -309,11 +309,14 @@ const (
 // NULL, and its length is in a column of its own after the table's
 // (dumpLengthColumn), followed by the row's ROWID (dumpRowidColumn), by which the
 // dump reads it in pieces. A value over maxLobBytes still stops the read when its
-// row is read (lobGuard), before any of it is.
+// row is read (lobGuard), before any of it is. The ROWID is read as the server
+// writes it as text (dumpRowidSelect): go-ora reads an index-organized table's
+// logical ROWID (UROWID) as text the server does not take back (ORA-01410).
 const (
 	dumpMark        = "/*opskat:dump*/"
 	inlineLobBytes  = 256 << 10
 	dumpRowidColumn = "\x00rowid"
+	dumpRowidSelect = "CAST(ROWID AS VARCHAR2(4000))"
 )
 
 // dumpLengthColumn names the length column of column in a dump's read. No Oracle
@@ -373,7 +376,7 @@ func (c *conn) queryTable(ctx context.Context, text string, read tableRead) (dri
 		fractions[col.name] = col.fraction
 	}
 	if len(unread) > 0 {
-		list, names = append(append(list, unread...), "ROWID"), append(append(names, unreadNames...), dumpRowidColumn)
+		list, names = append(append(list, unread...), dumpRowidSelect), append(append(names, unreadNames...), dumpRowidColumn)
 	}
 	hidden := guardList
 	if read != readPage && len(guards) > 0 {

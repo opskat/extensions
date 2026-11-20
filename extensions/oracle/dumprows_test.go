@@ -74,7 +74,7 @@ func expectDocsRead(mock sqlmock.Sqlmock, rows *sqlmock.Rows) {
 	_, nbodyGuard := guardedSelect(`"NBODY"`, 8388608)
 	_, imgGuard := guardedSelect(`"IMG"`, 16777216)
 	mock.ExpectQuery(`SELECT "ID", ` + inline("BODY", 131072) + `, ` + inline("NBODY", 131072) + `, ` + inline("IMG", 262144) + `, "NOTE", ` +
-		unread("BODY", 131072) + `, ` + unread("NBODY", 131072) + `, ` + unread("IMG", 262144) + `, ROWID, ` +
+		unread("BODY", 131072) + `, ` + unread("NBODY", 131072) + `, ` + unread("IMG", 262144) + `, CAST(ROWID AS VARCHAR2(4000)), ` +
 		bodyGuard + `, ` + nbodyGuard + `, ` + imgGuard + ` FROM ` + docs).WillReturnRows(rows)
 }
 

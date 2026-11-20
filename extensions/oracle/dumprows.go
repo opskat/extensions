@@ -212,10 +212,7 @@ func (c *dumpCursor) startBlocks(values map[string]any, pieces map[string]int64)
 	row := *c.row
 	row.Columns = make([]sqldb.InsertColumn, len(c.req.Columns))
 	streamed := map[string]*largeLob{}
-	rowid := fmt.Sprint(c.values[c.rowid])
-	if b, ok := c.values[c.rowid].([]byte); ok {
-		rowid = string(b)
-	}
+	rowid := fmt.Sprint(c.values[c.rowid]) // text (dumpRowidSelect)
 	for i, name := range c.req.Columns {
 		row.Columns[i] = sqldb.InsertColumn{Name: name, Type: c.row.Columns[i].Type, Value: sent.row[name]}
 		if length, ok := pieces[name]; ok {

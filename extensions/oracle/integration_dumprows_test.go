@@ -122,3 +122,55 @@ func TestIntegrationDumpReadsAConsistentRow(t *testing.T) {
 		require.NoError(t, db.PingContext(lobContext(t)))
 	})
 }
+
+// An index-organized table's rows have logical ROWIDs (UROWID), which go-ora
+// reads as text the server does not take back (ORA-01410): the dump reads a
+// row's ROWID as the server writes it as text, so a large value of such a table
+// is read in pieces by it like a heap table's, and runs back the same.
+func TestIntegrationDumpReadsLargeValuesOfAnIndexOrganizedTable(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		admin := adminTarget(t, target).open(t, "")
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+		srcName, dstName := "OPSKAT_IOT_S"+suffix, "OPSKAT_IOT_D"+suffix
+		srcDB := createDumpUser(t, admin, target, srcName)
+		dstDB := createDumpUser(t, admin, target, dstName)
+		const create = "CREATE TABLE T (ID NUMBER PRIMARY KEY, C CLOB, B BLOB) ORGANIZATION INDEX"
+		for _, statement := range []string{create, "INSERT INTO T (ID, C) VALUES (3, 'small')", "INSERT INTO T (ID) VALUES (2)",
+			textLobFill("T", "C", "CLOB", clobPiece, 300_000)} {
+			_, err := srcDB.ExecContext(lobContext(t), statement)
+			require.NoError(t, err, statement)
+		}
+		_, err := dstDB.ExecContext(lobContext(t), create)
+		require.NoError(t, err)
+
+		srcUser := target
+		srcUser.username, srcUser.password = srcName, dumpUserPassword
+		db, dialect, err := open(lobContext(t), srcUser.openRequest(srcName))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		source, err := sqldb.NewSession(db, dialect).TableStatements()
+		require.NoError(t, err)
+		pages, err := source.TableStatements(lobContext(t), srcName, "T", dbdriver.TableStatementsRequest{
+			Columns: []string{"ID", "C", "B"}, OmitDatabase: true, OwnRows: true, PageBytes: dbdriver.DumpPageBytes, BatchRows: 500})
+		require.NoError(t, err)
+		var statements []string
+		rows := 0
+		for {
+			page, err := pages.Next()
+			require.NoError(t, err)
+			statements, rows = append(statements, page.Statements...), rows+page.Rows
+			if page.Done {
+				break
+			}
+		}
+		require.NoError(t, pages.Close())
+		assert.Equal(t, 3, rows)
+		for _, statement := range statements {
+			_, err := dstDB.ExecContext(lobContext(t), statement)
+			require.NoError(t, err, "%.200s", statement)
+		}
+		assert.Equal(t, []string{"1|0|", "2||", "3|0|"}, textRows(t, admin, fmt.Sprintf(
+			"SELECT d.ID, DBMS_LOB.COMPARE(d.C, s.C), DBMS_LOB.COMPARE(d.B, s.B) FROM %s.T d JOIN %s.T s ON s.ID = d.ID ORDER BY d.ID",
+			quoteIdent(dstName), quoteIdent(srcName))))
+	})
+}
