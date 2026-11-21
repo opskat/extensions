@@ -158,11 +158,22 @@ func (c *dumpCursor) restart() error {
 		errs = append(errs, c.rows.Close())
 		c.rows = nil
 	}
-	if err := c.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		return errors.Join(append(errs, err)...)
-	}
-	c.tx, c.columns = nil, nil
+	errs = append(errs, c.endTransaction())
+	c.columns = nil
 	return errors.Join(errs...)
+}
+
+// endTransaction ends the read-only transaction. A connection whose transaction
+// cannot be ended is marked bad, so that the pool closes it instead of handing it
+// out with the transaction still open.
+func (c *dumpCursor) endTransaction() error {
+	tx := c.tx
+	c.tx = nil
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		_ = c.conn.Raw(func(any) error { return driver.ErrBadConn })
+		return fmt.Errorf("end the dump's read-only transaction: %w", err)
+	}
+	return nil
 }
 
 // start begins the read-only transaction and the read of the table.
@@ -425,10 +436,7 @@ func (c *dumpCursor) Close() error {
 		errs = append(errs, c.rows.Close())
 	}
 	if c.tx != nil {
-		if err := c.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-			_ = c.conn.Raw(func(any) error { return driver.ErrBadConn })
-			errs = append(errs, fmt.Errorf("end the dump's read-only transaction: %w", err))
-		}
+		errs = append(errs, c.endTransaction())
 	}
 	errs = append(errs, c.conn.Close())
 	return errors.Join(errs...)

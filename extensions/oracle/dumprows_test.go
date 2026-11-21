@@ -426,3 +426,20 @@ func TestDumpStopsWaitingForTheSnapshotWhenTheContextEnds(t *testing.T) {
 	assert.Less(t, time.Since(started), 5*time.Second)
 	noConnectionInUse(t, db)
 }
+
+// A snapshot that cannot be ended before it is started again leaves the
+// connection in a transaction of the dump's: the connection is closed, not given
+// back to the pool, as when the cursor's own transaction cannot be ended.
+func TestDumpClosesTheConnectionWhenARefusedSnapshotCannotBeEnded(t *testing.T) {
+	shortSnapshotRetry(t, time.Millisecond, time.Second)
+	s, db, mock := newExecSession(t)
+	expectDocsWriter(mock, "ID")
+	expectDocsReadQuery(mock).WillReturnError(tooOld())
+	mock.ExpectRollback().WillReturnError(errors.New("ORA-03113: end-of-file on communication channel"))
+
+	_, _, err := dumpStatements(t, s, dumpRequest())
+	require.ErrorContains(t, err, "ORA-03113")
+	require.NoError(t, mock.ExpectationsWereMet())
+	noConnectionInUse(t, db)
+	assert.Zero(t, db.Stats().OpenConnections, "open connections")
+}
