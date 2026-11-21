@@ -174,3 +174,66 @@ func TestIntegrationDumpReadsLargeValuesOfAnIndexOrganizedTable(t *testing.T) {
 			quoteIdent(dstName), quoteIdent(srcName))))
 	})
 }
+
+// dumpTableNow dumps the table at once, as a dump of a whole database does the
+// moment it reaches a table that was just created or emptied, and returns its
+// statements.
+func dumpTableNow(t *testing.T, target oracleTarget, user, table string) []string {
+	t.Helper()
+	srcUser := target
+	srcUser.username, srcUser.password = user, dumpUserPassword
+	db, dialect, err := open(lobContext(t), srcUser.openRequest(user))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	source, err := sqldb.NewSession(db, dialect).TableStatements()
+	require.NoError(t, err)
+	pages, err := source.TableStatements(lobContext(t), user, table, dbdriver.TableStatementsRequest{
+		Columns: []string{"ID", "NOTE"}, OmitDatabase: true, OwnRows: true, PageBytes: dbdriver.DumpPageBytes, BatchRows: 500})
+	require.NoError(t, err)
+	var statements []string
+	for {
+		page, err := pages.Next()
+		require.NoError(t, err)
+		statements = append(statements, page.Statements...)
+		if page.Done {
+			break
+		}
+	}
+	require.NoError(t, pages.Close())
+	return statements
+}
+
+// A table created, or emptied by TRUNCATE, a moment ago cannot be read as of the
+// instant a read-only transaction began (ORA-01466) until that instant is past the
+// DDL's: the dump waits for it instead of stopping, as long as it has produced
+// nothing of the table.
+func TestIntegrationDumpReadsATableRightAfterItsDDL(t *testing.T) {
+	forEachOracle(t, func(t *testing.T, target oracleTarget) {
+		admin := adminTarget(t, target).open(t, "")
+		suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+		name := "OPSKAT_DDL_" + suffix
+		srcDB := createDumpUser(t, admin, target, name)
+		for _, statement := range []string{"CREATE TABLE T (ID NUMBER PRIMARY KEY, NOTE VARCHAR2(20))",
+			"INSERT INTO T VALUES (1, 'a')", "COMMIT"} {
+			_, err := srcDB.ExecContext(lobContext(t), statement)
+			require.NoError(t, err, statement)
+		}
+		created := dumpTableNow(t, target, name, "T")
+		require.Len(t, created, 1)
+		assert.Contains(t, created[0], "'a'")
+
+		for _, statement := range []string{"TRUNCATE TABLE T"} {
+			_, err := srcDB.ExecContext(lobContext(t), statement)
+			require.NoError(t, err, statement)
+		}
+		assert.Empty(t, dumpTableNow(t, target, name, "T"))
+
+		for _, statement := range []string{"INSERT INTO T VALUES (2, 'b')", "COMMIT", "TRUNCATE TABLE T", "INSERT INTO T VALUES (3, 'c')", "COMMIT"} {
+			_, err := srcDB.ExecContext(lobContext(t), statement)
+			require.NoError(t, err, statement)
+		}
+		truncated := dumpTableNow(t, target, name, "T")
+		require.Len(t, truncated, 1)
+		assert.Contains(t, truncated[0], "'c'")
+	})
+}

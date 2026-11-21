@@ -7,11 +7,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/opskat/opskat/pkg/dbdriver"
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
+	"github.com/sijms/go-ora/v2/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,6 +58,12 @@ func inline(column string, units int) string {
 // a value over 16 MB (lobGuard). Fetches are sized by the largest row's LOB bytes
 // as read with the row.
 func expectDocsRead(mock sqlmock.Sqlmock, rows *sqlmock.Rows) {
+	expectDocsReadQuery(mock).WillReturnRows(rows)
+}
+
+// expectDocsReadQuery expects the read-only transaction and the queries that
+// come before the read of HR.DOCS, and the read, whose result is left to the caller.
+func expectDocsReadQuery(mock sqlmock.Sqlmock) *sqlmock.ExpectedQuery {
 	mock.ExpectBegin()
 	mock.ExpectExec("SET TRANSACTION READ ONLY").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(tableColumnTypesQuery).WithArgs("HR", "DOCS").WillReturnRows(tableColumnTypes().
@@ -73,9 +81,9 @@ func expectDocsRead(mock sqlmock.Sqlmock, rows *sqlmock.Rows) {
 	_, bodyGuard := guardedSelect(`"BODY"`, 8388608)
 	_, nbodyGuard := guardedSelect(`"NBODY"`, 8388608)
 	_, imgGuard := guardedSelect(`"IMG"`, 16777216)
-	mock.ExpectQuery(`SELECT "ID", ` + inline("BODY", 131072) + `, ` + inline("NBODY", 131072) + `, ` + inline("IMG", 262144) + `, "NOTE", ` +
+	return mock.ExpectQuery(`SELECT "ID", ` + inline("BODY", 131072) + `, ` + inline("NBODY", 131072) + `, ` + inline("IMG", 262144) + `, "NOTE", ` +
 		unread("BODY", 131072) + `, ` + unread("NBODY", 131072) + `, ` + unread("IMG", 262144) + `, CAST(ROWID AS VARCHAR2(4000)), ` +
-		bodyGuard + `, ` + nbodyGuard + `, ` + imgGuard + ` FROM ` + docs).WillReturnRows(rows)
+		bodyGuard + `, ` + nbodyGuard + `, ` + imgGuard + ` FROM ` + docs)
 }
 
 // docsRows is a result of the dump's read of HR.DOCS: the five columns, the three
@@ -314,4 +322,107 @@ func TestDumpReleasesItsConnection(t *testing.T) {
 		require.NoError(t, mock.ExpectationsWereMet())
 		noConnectionInUse(t, db)
 	})
+}
+
+// shortSnapshotRetry makes the wait and the limit of a snapshot's retry short.
+func shortSnapshotRetry(t *testing.T, wait, limit time.Duration) {
+	t.Helper()
+	oldWait, oldLimit := snapshotRetryWait, snapshotRetryLimit
+	snapshotRetryWait, snapshotRetryLimit = wait, limit
+	t.Cleanup(func() { snapshotRetryWait, snapshotRetryLimit = oldWait, oldLimit })
+}
+
+// tooOld is the error of a snapshot of a table whose DDL is as new as it.
+func tooOld() error { return network.NewOracleError(oraSnapshotTooOld) }
+
+// A table created or truncated a moment ago refuses the read-only snapshot
+// (ORA-01466): refused at the query or at its first fetch, with nothing produced
+// yet, the snapshot is started again and the dump goes on.
+func TestDumpStartsTheSnapshotAgainWhenItIsRefusedBeforeAnyRow(t *testing.T) {
+	shortSnapshotRetry(t, time.Millisecond, time.Second)
+	for name, refuse := range map[string]func(sqlmock.Sqlmock){
+		"at the query": func(mock sqlmock.Sqlmock) {
+			expectDocsReadQuery(mock).WillReturnError(tooOld())
+			mock.ExpectRollback()
+		},
+		"at the first fetch": func(mock sqlmock.Sqlmock) {
+			expectDocsReadQuery(mock).WillReturnRows(docsRows().
+				AddRow("1", nil, nil, nil, "x", nil, nil, nil, "AAA1", nil, nil, nil).RowError(0, tooOld()))
+			mock.ExpectRollback()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, db, mock := newExecSession(t)
+			expectDocsWriter(mock, "ID")
+			refuse(mock)
+			refuse(mock)
+			expectDocsRead(mock, docsRows().AddRow("1", nil, nil, nil, "a", nil, nil, nil, "AAA1", nil, nil, nil))
+			mock.ExpectRollback()
+
+			statements, rows, err := dumpStatements(t, s, dumpRequest())
+			require.NoError(t, err)
+			assert.Equal(t, 1, rows)
+			assert.Equal(t, []string{`INSERT INTO "DOCS" ("ID", "BODY", "NBODY", "IMG", "NOTE") VALUES (1, NULL, NULL, NULL, 'a');`}, statements)
+			require.NoError(t, mock.ExpectationsWereMet())
+			noConnectionInUse(t, db)
+		})
+	}
+}
+
+// A snapshot refused again and again is given up after snapshotRetryLimit, with
+// Oracle's error.
+func TestDumpStopsWithTheOriginalErrorWhenTheSnapshotStaysRefused(t *testing.T) {
+	shortSnapshotRetry(t, time.Millisecond, 30*time.Millisecond)
+	s, db, mock := newExecSession(t)
+	expectDocsWriter(mock, "ID")
+	for range 500 {
+		expectDocsReadQuery(mock).WillReturnError(tooOld())
+		mock.ExpectRollback()
+	}
+	started := time.Now()
+	_, _, err := dumpStatements(t, s, dumpRequest())
+	var oraErr *network.OracleError
+	require.ErrorAs(t, err, &oraErr)
+	assert.Equal(t, oraSnapshotTooOld, oraErr.ErrCode)
+	assert.Less(t, time.Since(started), 5*time.Second)
+	noConnectionInUse(t, db)
+}
+
+// Once a row of the table was read, ORA-01466 means the table changed under the
+// read: it stops the dump and is not retried.
+func TestDumpDoesNotStartTheSnapshotAgainAfterARowWasRead(t *testing.T) {
+	shortSnapshotRetry(t, time.Millisecond, time.Second)
+	s, db, mock := newExecSession(t)
+	expectDocsWriter(mock, "ID")
+	expectDocsRead(mock, docsRows().
+		AddRow("1", nil, nil, nil, "a", nil, nil, nil, "AAA1", nil, nil, nil).
+		AddRow("2", nil, nil, nil, "b", nil, nil, nil, "AAA2", nil, nil, nil).RowError(1, tooOld()))
+	mock.ExpectRollback()
+
+	_, _, err := dumpStatements(t, s, dumpRequest())
+	var oraErr *network.OracleError
+	require.ErrorAs(t, err, &oraErr)
+	assert.Equal(t, oraSnapshotTooOld, oraErr.ErrCode)
+	require.NoError(t, mock.ExpectationsWereMet())
+	noConnectionInUse(t, db)
+}
+
+// The wait for the next snapshot ends with the context.
+func TestDumpStopsWaitingForTheSnapshotWhenTheContextEnds(t *testing.T) {
+	shortSnapshotRetry(t, time.Hour, 2*time.Hour)
+	s, db, mock := newExecSession(t)
+	expectDocsWriter(mock, "ID")
+	expectDocsReadQuery(mock).WillReturnError(tooOld())
+	mock.ExpectRollback()
+	source, err := s.TableStatements()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	_, err = source.TableStatements(ctx, "HR", "DOCS", dumpRequest())
+	var oraErr *network.OracleError
+	require.ErrorAs(t, err, &oraErr)
+	assert.Less(t, time.Since(started), 5*time.Second)
+	noConnectionInUse(t, db)
 }

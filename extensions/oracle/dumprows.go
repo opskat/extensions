@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/opskat/opskat/pkg/dbdriver"
 	"github.com/opskat/opskat/pkg/dbdriver/sqldb"
+	"github.com/sijms/go-ora/v2/network"
 )
 
 var _ sqldb.TableStatementsWriter = dialect{}
@@ -50,6 +52,20 @@ func (dialect) TableStatements(ctx context.Context, table sqldb.TableStatementsT
 // when it began. It takes no privilege and holds no lock.
 const readOnlyTransaction = "SET TRANSACTION READ ONLY"
 
+// A table that was created or truncated a moment ago cannot be read as of the
+// instant a read-only transaction began, until that instant is past the DDL's:
+// the read stops with ORA-01466 (in a test, a second or two after the DDL, on
+// 19c and 23ai alike). As long as the dump has produced nothing of the table the
+// snapshot is simply started again, every snapshotRetryWait, for up to
+// snapshotRetryLimit in all; a later ORA-01466 (the table changed under the read)
+// is not retried.
+const oraSnapshotTooOld = 1466
+
+var (
+	snapshotRetryWait  = time.Second
+	snapshotRetryLimit = 5 * time.Second
+)
+
 // How much of a large value a dump reads at a time: about 1 MB, half a million
 // UTF-16 units of a CLOB or NCLOB (DBMS_LOB.GETLENGTH counts them), a whole
 // number of BLOB pieces (maxBase64Piece).
@@ -66,6 +82,10 @@ type dumpCursor struct {
 	tx     *sql.Tx
 	rows   *sql.Rows
 	writer dbdriver.RowStatementWriter
+	// retryUntil is when the snapshot is no longer started again after
+	// ORA-01466; produced is whether a row of the table was read.
+	retryUntil time.Time
+	produced   bool
 	// req is the row writer's request, without its rows.
 	req dbdriver.RowStatementsRequest
 
@@ -93,7 +113,60 @@ type dumpCursor struct {
 	closed  bool
 }
 
-func (c *dumpCursor) open() (err error) {
+func (c *dumpCursor) open() error {
+	c.retryUntil = time.Now().Add(snapshotRetryLimit)
+	return c.startRetrying()
+}
+
+// startRetrying starts the snapshot, again as long as retrySnapshot says so.
+func (c *dumpCursor) startRetrying() error {
+	for {
+		err := c.start()
+		if !c.retrySnapshot(err) {
+			return err
+		}
+		if err := c.restart(); err != nil {
+			return err
+		}
+	}
+}
+
+// retrySnapshot tells whether the snapshot is started again after err, and waits
+// for it: only for ORA-01466, before anything of the table was read, within
+// snapshotRetryLimit and while the context lives.
+func (c *dumpCursor) retrySnapshot(err error) bool {
+	var oraErr *network.OracleError
+	if c.produced || !errors.As(err, &oraErr) || oraErr.ErrCode != oraSnapshotTooOld || c.ctx.Err() != nil ||
+		time.Now().After(c.retryUntil) {
+		return false
+	}
+	timer := time.NewTimer(snapshotRetryWait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-c.ctx.Done():
+		return false
+	}
+}
+
+// restart ends the snapshot that could not be read; start begins the next on the
+// same connection.
+func (c *dumpCursor) restart() error {
+	var errs []error
+	if c.rows != nil {
+		errs = append(errs, c.rows.Close())
+		c.rows = nil
+	}
+	if err := c.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return errors.Join(append(errs, err)...)
+	}
+	c.tx, c.columns = nil, nil
+	return errors.Join(errs...)
+}
+
+// start begins the read-only transaction and the read of the table.
+func (c *dumpCursor) start() (err error) {
 	if c.tx, err = c.conn.BeginTx(c.ctx, nil); err != nil {
 		return err
 	}
@@ -149,8 +222,16 @@ func (c *dumpCursor) Next() bool {
 			return true
 		}
 		if !c.rows.Next() {
+			// The snapshot may be refused at the first fetch.
+			if !c.produced && c.retrySnapshot(c.rows.Err()) {
+				if c.err = c.restart(); c.err == nil {
+					c.err = c.startRetrying()
+				}
+				continue
+			}
 			return false
 		}
+		c.produced = true
 		c.err = c.startRow()
 	}
 	return false
