@@ -127,11 +127,11 @@
       "display": {
         "en": {
           "name": "Oracle",
-          "description": "Oracle Database (19c and later) driver for SQL database assets: browse schemas, run SQL, edit tables, import and export"
+          "description": "Oracle Database (19c and later) driver for SQL database assets: browse schemas, run SQL and SQL files, dump schemas and tables to SQL files, edit tables, import and export"
         },
         "zh-CN": {
           "name": "Oracle",
-          "description": "为「SQL 数据库」资产提供 Oracle Database（19c 及以上）驱动：浏览 schema、执行 SQL、编辑表数据、导入导出"
+          "description": "为「SQL 数据库」资产提供 Oracle Database（19c 及以上）驱动：浏览 schema、执行 SQL 与 SQL 文件、把 schema 与表转储为 SQL 文件、编辑表数据、导入导出"
         }
       },
       "icon": "oracle",
@@ -196,6 +196,39 @@
             "type": "oci",
             "ref": "ghcr.io/opskat/extensions/oracle:0.2.0",
             "sha256": "3278d3cf2d46c1425e8cc7e27f8490c4c6456f9bfa3242ec9e84e69fd57be1e7"
+          }
+        },
+        {
+          "version": "0.3.0",
+          "hostABI": "1.1",
+          "minAppVersion": "1.16.0",
+          "permissions": {
+            "fs": {
+              "read": null,
+              "write": null
+            },
+            "credentials": "",
+            "kerberos": true,
+            "network": {
+              "http": null,
+              "allowPrivate": false,
+              "assetEndpoint": true,
+              "assetRoute": true,
+              "settingsEndpoint": false
+            }
+          },
+          "contributes": {
+            "databaseDrivers": [
+              "oracle"
+            ],
+            "commandReviewer": false
+          },
+          "size": 6024908,
+          "publishedAt": "2026-11-24T07:53:30Z",
+          "source": {
+            "type": "oci",
+            "ref": "ghcr.io/opskat/extensions/oracle:0.3.0",
+            "sha256": "886baff55d992ccb8faa3b45bb33ffc73ba9f459b623e242a6d816e39752039c"
           }
         }
       ]
