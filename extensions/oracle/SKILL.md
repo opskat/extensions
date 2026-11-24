@@ -69,3 +69,81 @@ Use an ASCII password there; data in any language reads and writes correctly.
   reports a BOOLEAN as a plain NUMBER (a known limitation). The table view shows
   `true` / `false`.
 - Oracle errors come back as they are, with their `ORA-` number.
+
+## Running SQL files
+
+"Run SQL File…" on a schema runs a `.sql` file statement by statement on one
+connection, split as above; SQL Developer's "Export → Insert statements" files run
+as they are. Between statements, the file's SQL*Plus commands are handled as follows:
+
+- `SET` (except the SQL statements `SET TRANSACTION / ROLE / CONSTRAINTS`), `PROMPT`,
+  `REM[ARK]`, `SPOOL`, `CLEAR`, `COLUMN`, `TTITLE`, `BTITLE`, `SHOW` and a `/` with no
+  statement before it are skipped (one log line each).
+- `EXEC[UTE] call` runs as `BEGIN call; END;`.
+- `@` / `@@` / `START`, `WHENEVER`, `CONNECT`, `EXIT` / `QUIT`, `HOST` / `!`, `DEFINE`,
+  `UNDEFINE`, `ACCEPT`, `VARIABLE`, and a statement using an `&name` substitution
+  variable stop the run before them (the statements before have run); such a file
+  needs SQL*Plus. Put `SET DEFINE OFF` first when `&` is just text, as SQL Developer
+  does.
+
+## Dumping SQL files
+
+"Dump SQL File" on a schema or on selected tables writes a file that runs in any
+user — it names neither the source schema nor any tablespace or storage:
+
+- `SET DEFINE OFF` first, so an `&` in its values or code is text to SQL*Plus and
+  to Run SQL File;
+- the schema's own sequences (for selected tables, the ones their column defaults
+  use), starting at or past the source's current value;
+- each table's `CREATE TABLE` with its constraints, identity columns and comments,
+  then the indexes no constraint creates;
+- with data, one `INSERT` per row (no virtual columns); a `GENERATED ALWAYS`
+  identity column is `BY DEFAULT` while its rows go in, and right after them every
+  identity column is as defined again and continues past the rows (one of an empty
+  table keeps its `START WITH`) — before any view or trigger exists, so none is
+  left invalid;
+- the foreign keys after all data: Oracle cannot turn foreign key checks off, so
+  "disable foreign key checks" is not offered;
+- for a whole schema, its views (each a complete `CREATE OR REPLACE`), functions,
+  procedures and packages (spec, then body), ordered by `ALL_DEPENDENCIES` so
+  what an object uses comes first, each PL/SQL unit ending in a `/` line; the
+  schema's own objects named with the schema inside a view's query or a unit's
+  body lose it, names of other schemas and over database links keep theirs;
+  materialized views are left out;
+- for a whole schema, its triggers after all data, without the schema of their
+  table or of the schema's other objects they name, each followed by
+  `ALTER TRIGGER … ENABLE` or `DISABLE` as it was;
+- with drop statements, PL/SQL blocks that drop the foreign keys, the triggers,
+  views, procedures, packages and functions (in reverse dependency order), the
+  tables and the sequences and ignore the ones that do not exist, each ending in
+  `/`.
+
+A dump of selected tables has no functions, procedures, packages or triggers.
+
+## Large LOB values
+
+The table view, "Copy as INSERT", export and Dump SQL File hold each CLOB, NCLOB or
+BLOB value whole in the extension's memory, so a value may be at most **16 MB**,
+measured as Oracle stores it: 16,777,216 bytes for a BLOB, and 8,388,608
+characters for a CLOB or NCLOB (a character counts 2 bytes; the characters are what
+`DBMS_LOB.GETLENGTH` counts). An XMLType, JSON or VECTOR value is read as its text,
+which is held and measured the same way, as a CLOB. In "Copy as INSERT", export as
+SQL and dumps, a row whose value does not fit one SQL literal is a PL/SQL block that
+inserts it with an empty LOB and appends the value piece by piece (a CLOB as text,
+an NCLOB or BLOB in base64; the text of an XMLType, JSON or VECTOR value is built
+the same way in a temporary CLOB before the insert), ending with a line holding only
+`/`. When a row appends more than about 1 MB and its table has a primary key, or a
+unique key whose columns are all NOT NULL, the row is several such blocks: the first
+inserts it, each further one finds it by that key with `SELECT … FOR UPDATE` and
+appends about 1 MB more, so running the file reports progress block by block. In a
+table with neither key the row stays one block, of at most 24 MB of SQL text; a row
+that would need more stops the operation before any of it is written, with an error
+naming the table and the size.
+
+A larger value stops the read before the value is read, with an error naming the
+table, the column and the size, for example `column "DOC" of table "HR"."FILES"
+holds a value of 17.0 MB (17825792 bytes)`. Such a table cannot be shown, exported,
+copied or dumped with its data; leave the column out (select the other columns in the
+query panel, or `DBMS_LOB.SUBSTR(col, 4000, 1)` for a part of it) or move it with
+Oracle's own tools (Data Pump). The query panel does not check the size of what a
+query you write selects: do not select such a value whole there.

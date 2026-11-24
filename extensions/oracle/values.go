@@ -110,9 +110,11 @@ func displayVector[T any](elements []T, format func(T) string) string {
 
 // The table view reads a page with the table's columns known: the dictionary says
 // which columns hold a type go-ora cannot read (they are serialized to text in the
-// SELECT list) and the precision of each TIMESTAMP. The dialect marks the query
-// (tableMark) and the connection resolves it here; the page is still
-// "SELECT * FROM <table> ..." when no column needs serializing. The export's read
+// SELECT list), the precision of each TIMESTAMP, and which hold a CLOB, NCLOB or
+// BLOB, read, like a serialized column's text, only within maxLobBytes
+// (lobGuard). The dialect marks the query (tableMark) and the connection
+// resolves it here; the page is still
+// "SELECT * FROM <table> ..." when no column needs either. The export's read
 // (StreamTableRows) is the one table query the shared session writes without the
 // mark, so a text that is just that — SELECT * FROM "SCHEMA"."TABLE" with at most
 // a WHERE and an ORDER BY — is read the same way (isTableRead), also when a user
@@ -133,6 +135,152 @@ var serializers = map[string]string{
 	"VECTOR":  "FROM_VECTOR(%s RETURNING CLOB)",
 }
 
+// The largest LOB value a table read reads. Every value of a read is held whole
+// in the extension's memory (1 GiB, the module included) together with what is
+// made of it — its JSON, its row statement (RowInsertStatement) — except a
+// dump's CLOB, NCLOB or BLOB value larger than inlineLobBytes, which it reads in
+// pieces (dumprows.go); running out of it cannot be recovered from, so a larger
+// value stops the read, a dump's too, before it is read (lobGuard). The size is the value's in Oracle: bytes for a BLOB, 2 bytes per
+// character (as DBMS_LOB.GETLENGTH counts them: UTF-16 code units) for a CLOB or
+// NCLOB, which a Unicode database stores as UTF-16. 16 MB is 16 × 2^20 bytes:
+// a BLOB of 16,777,216 bytes, a CLOB or NCLOB of 8,388,608 characters. An
+// XMLType, JSON or VECTOR value is read as the CLOB of its text (serializers),
+// and measured as that CLOB.
+const maxLobBytes = 16 << 20
+
+// lobUnitBytes is the bytes per DBMS_LOB.GETLENGTH unit of each type a table
+// read guards, by the dictionary's DATA_TYPE.
+var lobUnitBytes = map[string]int{"BLOB": 1, "CLOB": 2, "NCLOB": 2, "XMLTYPE": 2, "JSON": 2, "VECTOR": 2}
+
+// lobGuard is the size check of one LOB column of a table read: the SELECT list
+// reads the column only when its value is within maxLobBytes, and a guard column
+// at the end of the list (not shown) holds the length of a larger one. expr is
+// the column as the read selects it: its quoted name, or its serialization.
+// inline, when set, is the most DBMS_LOB.GETLENGTH units of a value a dump's read
+// reads with its row (dumpInline).
+type lobGuard struct {
+	table, column, dataType, expr string
+	inline                        int
+}
+
+// selects are the guarded column's expression and its guard column's. The guard
+// measures the value once: a serialization is not cheap.
+func (g lobGuard) selects() (column, guard string) {
+	limit := maxLobBytes / lobUnitBytes[g.dataType]
+	read := limit
+	if g.inline > 0 {
+		read = g.inline
+	}
+	return fmt.Sprintf("CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) <= %[2]d THEN %[1]s END", g.expr, read),
+		fmt.Sprintf("NULLIF(GREATEST(DBMS_LOB.GETLENGTH(%[1]s), %[2]d), %[2]d)", g.expr, limit)
+}
+
+// unread is the length of a value larger than inline, which a dump reads in
+// pieces (dumpLengthColumn).
+func (g lobGuard) unread() string {
+	return fmt.Sprintf("CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) > %[2]d THEN DBMS_LOB.GETLENGTH(%[1]s) END", g.expr, g.inline)
+}
+
+// readBytes is the most bytes the read reads of the column's value with its row
+// (lobMemoryBytes).
+func (g lobGuard) readBytes() string {
+	if g.inline > 0 {
+		return fmt.Sprintf("CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) <= %[2]d THEN DBMS_LOB.GETLENGTH(%[1]s) ELSE 0 END * %[3]d",
+			g.expr, g.inline, lobMemoryBytes[g.dataType])
+	}
+	return fmt.Sprintf("NVL(DBMS_LOB.GETLENGTH(%s), 0) * %d", g.expr, lobMemoryBytes[g.dataType])
+}
+
+// err is the error of a value the guard column says has length (in
+// DBMS_LOB.GETLENGTH units).
+func (g lobGuard) err(length driver.Value) error {
+	n, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(length)), 10, 64)
+	if err != nil {
+		return fmt.Errorf("oracle: length of column %s of table %s: %w", quoteIdent(g.column), g.table, err)
+	}
+	unit := "bytes"
+	if g.dataType != "BLOB" {
+		unit = "characters"
+	}
+	return fmt.Errorf("oracle: column %s of table %s holds a value of %.1f MB (%d %s); OpsKat reads a CLOB, NCLOB or BLOB "+
+		"value, or the text of an XMLType, JSON or VECTOR value, of at most 16 MB (16777216 bytes, a character counting "+
+		"2 bytes), so the rows of this table "+
+		"cannot be read, dumped, exported or copied while it holds one", quoteIdent(g.column), g.table,
+		float64(n*int64(lobUnitBytes[g.dataType]))/(1<<20), n, unit)
+}
+
+// How a whole-table read fetches LOB values. go-ora reads a query with LOB
+// columns with their values inline and sizes each fetch from the columns'
+// declared lengths alone, counting a LOB as 2 bytes: 128 KiB / row size + 1 rows
+// (go-ora command.go, queryLobPrefetch) — thousands of rows for a table of an ID
+// and a BLOB, all held at once, whatever their values take. So the read first
+// asks for its largest row's LOB bytes (largestLobRow) and adds NULL columns,
+// not shown, whose declared lengths bring a fetch down to about lobFetchBytes of
+// values (fetchPadding).
+const (
+	lobFetchBytes = 8 << 20
+	// goOraLobFetch is the 128 KiB go-ora divides by the row size.
+	goOraLobFetch = 0x20000
+	// minLobRowSize is the smallest row size go-ora sees in a guarded read: a LOB
+	// (2) and its guard column (a NUMBER, 22).
+	minLobRowSize = 24
+)
+
+// lobMemoryBytes is the bytes a DBMS_LOB.GETLENGTH unit of each guarded type
+// takes in the extension at most: a byte, or a character's UTF-8.
+var lobMemoryBytes = map[string]int64{"BLOB": 1, "CLOB": 3, "NCLOB": 3, "XMLTYPE": 3, "JSON": 3, "VECTOR": 3}
+
+// largestLobRow is the most bytes the LOB values of one row of the read take in
+// the extension (lobMemoryBytes, as read with the row: lobGuard.readBytes),
+// measured on the server without reading them.
+func (c *conn) largestLobRow(ctx context.Context, guards []lobGuard, rest string) (int64, error) {
+	columns := make([]string, len(guards))
+	sizes := make([]string, len(guards))
+	for i, g := range guards {
+		columns[i] = quoteIdent(g.column)
+		sizes[i] = g.readBytes()
+	}
+	r, err := c.query(ctx, "SELECT MAX("+strings.Join(sizes, " + ")+") FROM (SELECT "+strings.Join(columns, ", ")+" FROM "+rest+")", nil)
+	if err != nil {
+		return 0, err
+	}
+	dest := make([]driver.Value, 1)
+	if err := r.Next(dest); err != nil {
+		return 0, errors.Join(err, r.Close())
+	}
+	if err := r.Close(); err != nil {
+		return 0, err
+	}
+	if dest[0] == nil { // no rows
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(dest[0])), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("oracle: size of the table's LOB values: %w", err)
+	}
+	return n, nil
+}
+
+// fetchPadding is the NULL columns that make go-ora fetch rows of up to rowBytes
+// of LOB values about lobFetchBytes at a time, at least a row: declared lengths
+// totalling goOraLobFetch / (rows - 1), and past goOraLobFetch for one row. None
+// when go-ora fetches no more rows than that anyway.
+func fetchPadding(rowBytes int64) []string {
+	rows := lobFetchBytes / max(rowBytes, 1)
+	if rows > goOraLobFetch/minLobRowSize {
+		return nil
+	}
+	total := goOraLobFetch + 1
+	if rows > 1 {
+		total = int((goOraLobFetch + rows - 2) / (rows - 1))
+	}
+	var columns []string
+	for ; total > 0; total -= maxTextLiteral {
+		columns = append(columns, fmt.Sprintf("CAST(NULL AS VARCHAR2(%d BYTE))", min(total, maxTextLiteral)))
+	}
+	return columns
+}
+
 type dictColumn struct {
 	name     string
 	dataType string
@@ -145,7 +293,41 @@ type dictColumn struct {
 // The write path compares the column itself (EqualitySQL), not this text.
 const booleanSelect = "CASE WHEN %[1]s THEN 'true' WHEN NOT %[1]s THEN 'false' END"
 
-func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error) {
+// tableRead is what a table read reads: a page of the table view, or the whole
+// table — for an export, or for a dump, whose large LOB values are read in pieces
+// (readDump) — whose fetches are sized to its LOB values (fetchPadding).
+type tableRead int
+
+const (
+	readPage tableRead = iota
+	readWhole
+	readDump
+)
+
+// A dump's read (dumpMark: TableStatements, dumprows.go) reads a CLOB, NCLOB or
+// BLOB value with its row only within inlineLobBytes (dumpInline): a larger one is
+// NULL, and its length is in a column of its own after the table's
+// (dumpLengthColumn), followed by the row's ROWID (dumpRowidColumn), by which the
+// dump reads it in pieces. A value over maxLobBytes still stops the read when its
+// row is read (lobGuard), before any of it is. The ROWID is read as the server
+// writes it as text (dumpRowidSelect): go-ora reads an index-organized table's
+// logical ROWID (UROWID) as text the server does not take back (ORA-01410).
+const (
+	dumpMark        = "/*opskat:dump*/"
+	inlineLobBytes  = 256 << 10
+	dumpRowidColumn = "\x00rowid"
+	dumpRowidSelect = "CAST(ROWID AS VARCHAR2(4000))"
+)
+
+// dumpLengthColumn names the length column of column in a dump's read. No Oracle
+// name holds a NUL.
+func dumpLengthColumn(column string) string { return "\x00length\x00" + column }
+
+// dumpInline is the DBMS_LOB.GETLENGTH units of a value of each type a dump reads
+// with its row: inlineLobBytes.
+var dumpInline = map[string]int{"CLOB": inlineLobBytes / 2, "NCLOB": inlineLobBytes / 2, "BLOB": inlineLobBytes}
+
+func (c *conn) queryTable(ctx context.Context, text string, read tableRead) (driver.Rows, error) {
 	rest, ok := strings.CutPrefix(text, selectStarFrom)
 	if !ok {
 		return nil, fmt.Errorf("oracle: table query does not start with %q: %.40s", selectStarFrom, text)
@@ -163,6 +345,12 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 	names := make([]string, len(columns))
 	serialized := false
 	fractions := make(map[string]int, len(columns))
+	tableRef := quoteIdent(table)
+	if schema != "" {
+		tableRef = quoteIdent(schema) + "." + tableRef
+	}
+	var guards []lobGuard
+	var guardList, unread, unreadNames []string
 	for i, col := range columns {
 		list[i], names[i] = quoteIdent(col.name), col.name
 		format, ok := serializers[col.dataType]
@@ -173,10 +361,33 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 			list[i] = fmt.Sprintf(format, list[i])
 			serialized = true
 		}
+		if _, ok := lobUnitBytes[col.dataType]; ok {
+			g := lobGuard{table: tableRef, column: col.name, dataType: col.dataType, expr: list[i]}
+			if read == readDump {
+				if g.inline = dumpInline[col.dataType]; g.inline > 0 {
+					unread, unreadNames = append(unread, g.unread()), append(unreadNames, dumpLengthColumn(col.name))
+				}
+			}
+			var guard string
+			list[i], guard = g.selects()
+			guards, guardList = append(guards, g), append(guardList, guard)
+			serialized = true
+		}
 		fractions[col.name] = col.fraction
 	}
+	if len(unread) > 0 {
+		list, names = append(append(list, unread...), dumpRowidSelect), append(append(names, unreadNames...), dumpRowidColumn)
+	}
+	hidden := guardList
+	if read != readPage && len(guards) > 0 {
+		rowBytes, err := c.largestLobRow(ctx, guards, rest)
+		if err != nil {
+			return nil, err
+		}
+		hidden = append(hidden, fetchPadding(rowBytes)...)
+	}
 	if serialized {
-		query = "SELECT " + strings.Join(list, ", ") + " FROM " + rest
+		query = "SELECT " + strings.Join(append(list, hidden...), ", ") + " FROM " + rest
 	}
 	r, err := c.query(ctx, query, nil)
 	if err != nil {
@@ -187,6 +398,7 @@ func (c *conn) queryTable(ctx context.Context, text string) (driver.Rows, error)
 		// rather than by the expression (a CLOB cannot be sorted, ORA-22848); the
 		// rows carry the columns' names instead of the expressions' text.
 		r.names = names
+		r.guards, r.hidden = guards, len(hidden)
 	}
 	r.fractions = make([]int, len(r.Columns()))
 	for i, name := range r.Columns() {

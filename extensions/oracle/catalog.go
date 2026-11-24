@@ -35,10 +35,13 @@ func (dialect) ListDatabases(ctx context.Context, conn *sql.Conn) ([]string, err
 
 // ListTables lists the schema's tables, partitioned ones included. Tables in the
 // recycle bin are left out, and so is a materialized view's container table: the
-// materialized view is listed with the views.
+// materialized view is listed with the views. An index-organized table's overflow
+// segment and mapping table are internal to it and left out too: its DDL carries
+// both.
 func (dialect) ListTables(ctx context.Context, conn *sql.Conn, database string) ([]string, error) {
 	return sqldb.QueryNames(ctx, conn,
 		"SELECT t.table_name FROM all_tables t WHERE t.owner = "+ownerIs+" AND t.dropped = 'NO' "+
+			"AND (t.iot_type IS NULL OR t.iot_type = 'IOT') "+
 			"AND NOT EXISTS (SELECT 1 FROM all_mviews m WHERE m.owner = t.owner AND m.mview_name = t.table_name) "+
 			"ORDER BY t.table_name", database)
 }
@@ -182,12 +185,19 @@ func (dialect) ObjectSource(ctx context.Context, conn *sql.Conn, database, objTy
 	if objType == dbdriver.ObjectView {
 		return objectDDL(ctx, conn, database, name, []string{"VIEW"}, "VIEW")
 	}
-	unit, isPackage := strings.CutSuffix(name, packageMarker)
+	unit, isPackage := packageUnit(name)
 	metadataType := metadataTypes[objType]
 	if isPackage {
 		metadataType = "PACKAGE"
 	}
-	return unitSource(ctx, conn, database, strings.TrimSpace(unit), sourceTypes[objType], metadataType)
+	return unitSource(ctx, conn, database, unit, sourceTypes[objType], metadataType)
+}
+
+// packageUnit gives the unit a procedure list name stands for, and whether it is
+// a package (the name ends in the package marker).
+func packageUnit(name string) (unit string, isPackage bool) {
+	unit, isPackage = strings.CutSuffix(name, packageMarker)
+	return strings.TrimSpace(unit), isPackage
 }
 
 // unitSource reads the unit's source from ALL_SOURCE. A unit the user cannot see,

@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -145,16 +148,23 @@ func TestTableViewSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow(`C"FG`, "JSON", nil).
 		AddRow("EMB", "VECTOR", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
-		`JSON_SERIALIZE("C""FG" RETURNING CLOB), FROM_VECTOR("EMB" RETURNING CLOB) ` +
-		`FROM ` + emp + ` WHERE "ID" = '1' ORDER BY "ID" ASC OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY`).
+	// Their text is a CLOB of any size, read only within 16 MB like a CLOB's
+	// (TestTableReadStopsBeforeALobOverTheLimit).
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	cfg, cfgGuard := guardedSelect(`JSON_SERIALIZE("C""FG" RETURNING CLOB)`, 8388608)
+	emb, embGuard := guardedSelect(`FROM_VECTOR("EMB" RETURNING CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, "TS", ` + cfg + `, ` + emb + `, ` + docGuard + `, ` + cfgGuard + `, ` + embGuard + ` ` +
+		`FROM ` + emp + ` WHERE "ID" = 1 ORDER BY "ID" ASC OFFSET 20 ROWS FETCH NEXT 20 ROWS ONLY`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
-			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`DOC`).OfType("OCIClobLocator", ""),
 			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
-			sqlmock.NewColumn(`JSON_SERIALIZE("C""FG"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
-			sqlmock.NewColumn(`FROM_VECTOR("EMB"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
-		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, "[1,2]"))
+			sqlmock.NewColumn(`CFG`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`EMB`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn("GDOC").OfType("NUMBER", ""),
+			sqlmock.NewColumn("GCFG").OfType("NUMBER", ""),
+			sqlmock.NewColumn("GEMB").OfType("NUMBER", ""),
+		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, "[1,2]", nil, nil, nil))
 
 	rows, err := s.TableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
 		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "1"}},
@@ -178,14 +188,22 @@ func TestTableExportSerializesXMLJSONAndVectorColumns(t *testing.T) {
 		AddRow("DOC", "XMLTYPE", nil).
 		AddRow("TS", "TIMESTAMP(3)", "3").
 		AddRow("CFG", "JSON", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB), "TS", ` +
-		`JSON_SERIALIZE("CFG" RETURNING CLOB) FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC`).
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	cfg, cfgGuard := guardedSelect(`JSON_SERIALIZE("CFG" RETURNING CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH(XMLSERIALIZE(CONTENT "DOC" AS CLOB)), 0) * 3 + ` +
+		`NVL(DBMS_LOB.GETLENGTH(JSON_SERIALIZE("CFG" RETURNING CLOB)), 0) * 3) ` +
+		`FROM (SELECT "DOC", "CFG" FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC)`).
+		WillReturnRows(sqlmock.NewRows([]string{"MAX"}).AddRow("100"))
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, "TS", ` + cfg + `, ` + docGuard + `, ` + cfgGuard +
+		` FROM ` + emp + ` WHERE "ID" = 'union' ORDER BY "ID" ASC`).
 		WillReturnRows(sqlmock.NewRowsWithColumnDefinition(
 			sqlmock.NewColumn("ID").OfType("NUMBER", ""),
-			sqlmock.NewColumn(`XMLSERIALIZE(CONTENT"DOC"ASCLOB)`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn(`DOC`).OfType("OCIClobLocator", ""),
 			sqlmock.NewColumn("TS").OfType("TIMESTAMP", time.Time{}),
-			sqlmock.NewColumn(`JSON_SERIALIZE("CFG"RETURNINGCLOB)`).OfType("OCIClobLocator", ""),
-		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`))
+			sqlmock.NewColumn(`CFG`).OfType("OCIClobLocator", ""),
+			sqlmock.NewColumn("GDOC").OfType("NUMBER", ""),
+			sqlmock.NewColumn("GCFG").OfType("NUMBER", ""),
+		).AddRow("1", "<a>1</a>", wholeSec, `{"k":1}`, nil, nil))
 
 	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{
 		Filters: []dbdriver.FilterItem{{Kind: dbdriver.FilterCondition, Join: dbdriver.JoinAnd, Column: "ID", Operator: dbdriver.OpEqual, Value: "union"}},
@@ -279,8 +297,9 @@ func TestOpenTableFirstPageIsShownLikeTheTableView(t *testing.T) {
 		AddRow("DOC", "XMLTYPE", "YES", nil, nil, "0", "0", "0"))
 	mock.ExpectQuery(`SELECT COUNT(*) FROM ` + emp).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow("1"))
 	expectTableColumns(mock, tableColumnTypes().AddRow("ID", "NUMBER", nil).AddRow("DOC", "XMLTYPE", nil))
-	mock.ExpectQuery(`SELECT "ID", XMLSERIALIZE(CONTENT "DOC" AS CLOB) FROM ` + emp + ` FETCH FIRST 50 ROWS ONLY`).
-		WillReturnRows(sqlmock.NewRows([]string{"ID", `XMLSERIALIZE(CONTENT"DOC"ASCLOB)`}).AddRow("1", "<a/>"))
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, ` + docGuard + ` FROM ` + emp + ` FETCH FIRST 50 ROWS ONLY`).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", "DOC", "GDOC"}).AddRow("1", "<a/>", nil))
 
 	opened, err := s.OpenTable(context.Background(), "HR", "EMP", 50)
 	require.NoError(t, err)
@@ -301,4 +320,105 @@ func TestStarterAndFreeSQLAreNotRewritten(t *testing.T) {
 	_, err = s.Execute(context.Background(), query)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A table read reads a CLOB, NCLOB or BLOB value only when it is within 16 MB
+// (a character counting 2 bytes); a larger one is left unread, and its guard
+// column — not shown — fails the row with the table, the column and the size.
+func TestTableReadStopsBeforeALobOverTheLimit(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	expectTableColumns(mock, tableColumnTypes().
+		AddRow("ID", "NUMBER", nil).
+		AddRow("C", "CLOB", nil).
+		AddRow("NC", "NCLOB", nil).
+		AddRow("B", "BLOB", nil))
+	c, cGuard := guardedSelect(`"C"`, 8388608)
+	nc, ncGuard := guardedSelect(`"NC"`, 8388608)
+	b, bGuard := guardedSelect(`"B"`, 16777216)
+	// The whole-table read sizes its fetches from its largest row first; rows of a
+	// few KB need no padding.
+	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH("C"), 0) * 3 + NVL(DBMS_LOB.GETLENGTH("NC"), 0) * 3 + ` +
+		`NVL(DBMS_LOB.GETLENGTH("B"), 0) * 1) FROM (SELECT "C", "NC", "B" FROM ` + emp + `)`).
+		WillReturnRows(sqlmock.NewRows([]string{"MAX"}).AddRow("1000"))
+	mock.ExpectQuery(`SELECT "ID", ` + c + `, ` + nc + `, ` + b + `, ` + cGuard + `, ` + ncGuard + `, ` + bGuard + ` FROM ` + emp).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", "C", "NC", "B", "GC", "GNC", "GB"}).
+			AddRow("1", "text", nil, []byte{0, 1}, nil, nil, nil).
+			AddRow("2", nil, nil, nil, nil, nil, "17825792"))
+
+	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	assert.Equal(t, []string{"ID", "C", "NC", "B"}, stream.Columns())
+	require.True(t, stream.Next(), "stream error: %v", stream.Err())
+	assert.Equal(t, []any{"1", "text", nil, "\x00\x01"}, stream.Row())
+	assert.False(t, stream.Next())
+	require.Error(t, stream.Err())
+	assert.Contains(t, stream.Err().Error(), `column "B" of table "HR"."EMP" holds a value of 17.0 MB (17825792 bytes)`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// guardedSelect is a guarded LOB's expression in a table read's SELECT list,
+// read only within limit DBMS_LOB.GETLENGTH units, and its guard column, the
+// length of a larger value.
+func guardedSelect(expr string, limit int) (string, string) {
+	return fmt.Sprintf(`CASE WHEN DBMS_LOB.GETLENGTH(%[1]s) <= %[2]d THEN %[1]s END`, expr, limit),
+		fmt.Sprintf(`NULLIF(GREATEST(DBMS_LOB.GETLENGTH(%[1]s), %[2]d), %[2]d)`, expr, limit)
+}
+
+// An XMLType, JSON or VECTOR value over the limit, measured as its text, stops
+// the read like a CLOB's, naming the type's text; the whole-table read sizes its
+// fetches by that text too.
+func TestTableReadStopsBeforeSerializedTextOverTheLimit(t *testing.T) {
+	s, _, mock := newExecSession(t)
+	expectTableColumns(mock, tableColumnTypes().
+		AddRow("ID", "NUMBER", nil).
+		AddRow("DOC", "XMLTYPE", nil))
+	doc, docGuard := guardedSelect(`XMLSERIALIZE(CONTENT "DOC" AS CLOB)`, 8388608)
+	mock.ExpectQuery(`SELECT MAX(NVL(DBMS_LOB.GETLENGTH(XMLSERIALIZE(CONTENT "DOC" AS CLOB)), 0) * 3) FROM (SELECT "DOC" FROM ` + emp + `)`).
+		WillReturnRows(sqlmock.NewRows([]string{"MAX"}).AddRow("1000"))
+	mock.ExpectQuery(`SELECT "ID", ` + doc + `, ` + docGuard + ` FROM ` + emp).
+		WillReturnRows(sqlmock.NewRows([]string{"ID", "DOC", "GDOC"}).
+			AddRow("1", "<a/>", nil).
+			AddRow("2", nil, "8912896"))
+
+	stream, err := s.StreamTableRows(context.Background(), "HR", "EMP", dbdriver.TableQuery{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	assert.Equal(t, []string{"ID", "DOC"}, stream.Columns())
+	require.True(t, stream.Next(), "stream error: %v", stream.Err())
+	assert.Equal(t, []any{"1", "<a/>"}, stream.Row())
+	assert.False(t, stream.Next())
+	require.Error(t, stream.Err())
+	assert.Contains(t, stream.Err().Error(), `column "DOC" of table "HR"."EMP" holds a value of 17.0 MB (8912896 characters)`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A CLOB or NCLOB is measured at 2 bytes per character.
+func TestLobGuardErrorMeasuresCharactersAtTwoBytes(t *testing.T) {
+	err := lobGuard{table: `"HR"."EMP"`, column: "NC", dataType: "NCLOB"}.err("8912896")
+	assert.Contains(t, err.Error(), `column "NC" of table "HR"."EMP" holds a value of 17.0 MB (8912896 characters)`)
+}
+
+// A whole-table read's padding brings go-ora's fetch (128 KiB / declared row size
+// + 1 rows, a LOB counting 2 bytes) down to about 8 MiB of LOB values, at least
+// one row; small rows keep go-ora's own fetch.
+func TestFetchPaddingBoundsGoOraFetches(t *testing.T) {
+	declared := regexp.MustCompile(`^CAST\(NULL AS VARCHAR2\((\d+) BYTE\)\)$`)
+	for _, rowBytes := range []int64{0, 100, 2000, 64 << 10, 256 << 10, 3 << 20, 16 << 20, 48 << 20} {
+		size := minLobRowSize
+		for _, column := range fetchPadding(rowBytes) {
+			m := declared.FindStringSubmatch(column)
+			require.NotNil(t, m, column)
+			n, err := strconv.Atoi(m[1])
+			require.NoError(t, err)
+			require.LessOrEqual(t, n, 4000)
+			size += n
+		}
+		rows := int64(0x20000/size + 1)
+		assert.True(t, rows == 1 || rows*rowBytes <= 8<<20, "row of %d bytes: %d rows a fetch", rowBytes, rows)
+		if rowBytes <= 1000 {
+			assert.Empty(t, fetchPadding(rowBytes), "row of %d bytes", rowBytes)
+		}
+	}
+	assert.Len(t, fetchPadding(16<<20), 33, "a 16 MB row is fetched alone")
 }

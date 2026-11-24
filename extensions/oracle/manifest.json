@@ -1,8 +1,8 @@
 {
   "name": "oracle",
-  "version": "0.2.0",
-  "minAppVersion": "1.15.0",
-  "hostABI": "1.0",
+  "version": "0.3.0",
+  "minAppVersion": "1.16.0",
+  "hostABI": "1.1",
   "backend": {
     "runtime": "wasm",
     "binary": "main.wasm"

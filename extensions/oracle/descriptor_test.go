@@ -119,3 +119,23 @@ func TestDescriptorDeclaresImport(t *testing.T) {
 	assert.False(t, togglesForeignKeys)
 	assert.False(t, d.CanDisableForeignKeyChecks)
 }
+
+// Run SQL File is declared because the dialect splits files itself: the host
+// offers it, and sqldb runs it, only then.
+func TestDescriptorDeclaresRunSQLFile(t *testing.T) {
+	_, splits := any(dialect{}).(dbdriver.ScriptSplitter)
+	require.True(t, splits)
+	assert.Equal(t, splits, descriptor().Supports(dbdriver.CapRunSQLFile))
+}
+
+// Dump SQL File is declared because the dialect writes dumps; Oracle cannot turn
+// foreign key checks off for a session, so the file adds the foreign keys after
+// the data instead and the host greys out "disable foreign key checks".
+func TestDescriptorDeclaresDumpSQL(t *testing.T) {
+	d := descriptor()
+	_, dumps := any(dialect{}).(sqldb.DumpDialect)
+	require.True(t, dumps)
+	assert.Equal(t, dumps, d.Supports(dbdriver.CapDumpSQL))
+	assert.False(t, sqldb.DumpDisablesForeignKeyChecks(dialect{}))
+	assert.Equal(t, sqldb.DumpDisablesForeignKeyChecks(dialect{}), d.DumpDisablesForeignKeyChecks)
+}

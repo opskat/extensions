@@ -170,8 +170,8 @@ func TestIntegrationGridEditInsertsADefaultRow(t *testing.T) {
 // The values the table view shows write back unchanged: copying a row as UPDATE
 // (and the grid, which writes the same literals) keeps DATE, TIMESTAMP to
 // nanoseconds, the time zone, a local time zone and binary values as they were
-// (the session's NLS formats read the shown layout, connect.go), and copying it as
-// INSERT recreates it.
+// (each written with the explicit format of its shown layout, write.go), and
+// copying it as INSERT recreates it.
 func TestIntegrationDisplayedValuesWriteBack(t *testing.T) {
 	forEachOracle(t, func(t *testing.T, target oracleTarget) {
 		s, schema, table := writeSession(t, target, "OPSKAT_WR_VAL",
